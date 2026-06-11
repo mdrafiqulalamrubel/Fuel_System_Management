@@ -1,0 +1,342 @@
+<?php
+require_once 'config/database.php';
+if(!isLoggedIn()) redirect('index.php');
+
+$user = getCurrentUser();
+$error = '';
+$success = '';
+
+// Process payment
+if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['record_payment'])) {
+    $customer_id = $_POST['customer_id'];
+    $payment_date = $_POST['payment_date'];
+    $amount = floatval($_POST['amount']);
+    $payment_method = $_POST['payment_method'];
+    $notes = isset($_POST['notes']) ? $_POST['notes'] : '';
+    $receipt_no = 'PAY-' . date('YmdHis') . rand(100, 999);
+    
+    try {
+        $pdo->beginTransaction();
+        
+        // Get customer details
+        $stmt = $pdo->prepare("SELECT * FROM customers WHERE id = ?");
+        $stmt->execute([$customer_id]);
+        $customer = $stmt->fetch();
+        
+        if(!$customer) {
+            throw new Exception("Customer not found!");
+        }
+        
+        // Get pending credit sales (oldest first) where balance_due > 0
+        $stmt = $pdo->prepare("
+            SELECT * FROM credit_sales 
+            WHERE customer_id = ? AND balance_due > 0 
+            ORDER BY sale_date ASC
+        ");
+        $stmt->execute([$customer_id]);
+        $credit_sales = $stmt->fetchAll();
+        
+        if(empty($credit_sales)) {
+            throw new Exception("No pending credit sales found for this customer!");
+        }
+        
+        $remaining_amount = $amount;
+        $total_paid = 0;
+        
+        // Apply payment to credit sales
+        foreach($credit_sales as $sale) {
+            if($remaining_amount <= 0) break;
+            
+            $due = $sale['balance_due'];
+            $pay_amount = min($remaining_amount, $due);
+            
+            // Calculate new values
+            $new_paid = $sale['paid_amount'] + $pay_amount;
+            $new_balance = $due - $pay_amount;
+            $new_status = ($new_balance <= 0) ? 'paid' : 'partial';
+            
+            // Update credit sale
+            $stmt = $pdo->prepare("UPDATE credit_sales SET paid_amount = ?, balance_due = ?, status = ? WHERE id = ?");
+            $stmt->execute([$new_paid, $new_balance, $new_status, $sale['id']]);
+            
+            // Record payment detail
+            $stmt = $pdo->prepare("INSERT INTO credit_payments (credit_sale_id, payment_date, amount, payment_method, receipt_no, notes) VALUES (?, ?, ?, ?, ?, ?)");
+            $stmt->execute([$sale['id'], $payment_date, $pay_amount, $payment_method, $receipt_no, $notes]);
+            
+            $remaining_amount -= $pay_amount;
+            $total_paid += $pay_amount;
+        }
+        
+        // Update customer current balance (REDUCE the balance by the payment amount)
+        // IMPORTANT: If customer had Dr balance (positive), payment reduces it
+        $stmt = $pdo->prepare("UPDATE customers SET current_balance = current_balance - ? WHERE id = ?");
+        $stmt->execute([$total_paid, $customer_id]);
+        
+        // Create accounting entry
+        // Get account IDs
+        $stmt = $pdo->prepare("SELECT id FROM chart_of_accounts WHERE account_code = '1000'"); // Cash
+        $cash_account = $stmt->fetch();
+        $stmt = $pdo->prepare("SELECT id FROM chart_of_accounts WHERE account_code = '1300'"); // Accounts Receivable
+        $ar_account = $stmt->fetch();
+        
+        if($cash_account && $ar_account) {
+            $voucher_no = 'RECV-' . date('YmdHis') . rand(100, 999);
+            $stmt = $pdo->prepare("INSERT INTO vouchers (voucher_no, voucher_type, date, narration, created_by, status) VALUES (?, 'receipt', ?, ?, ?, 'approved')");
+            $stmt->execute([$voucher_no, $payment_date, "Payment received from {$customer['customer_name']} - Receipt: $receipt_no - Amount: BDT $total_paid", $user['id']]);
+            $voucher_id = $pdo->lastInsertId();
+            
+            // Debit Cash, Credit Accounts Receivable
+            $stmt = $pdo->prepare("INSERT INTO voucher_items (voucher_id, account_id, debit_amount, credit_amount, description) VALUES (?, ?, ?, ?, ?), (?, ?, ?, ?, ?)");
+            $stmt->execute([
+                $voucher_id, $cash_account['id'], $total_paid, 0, "Payment received from {$customer['customer_name']}",
+                $voucher_id, $ar_account['id'], 0, $total_paid, "Customer payment applied to credit sales"
+            ]);
+        }
+        
+        $pdo->commit();
+        $success = "Payment recorded successfully! Receipt No: $receipt_no<br>
+                    Amount Paid: BDT " . number_format($total_paid, 2) . "<br>
+                    Updated Balance: BDT " . number_format($customer['current_balance'] - $total_paid, 2);
+        
+    } catch(Exception $e) {
+        $pdo->rollBack();
+        $error = "Error: " . $e->getMessage();
+    }
+}
+
+// Get all customers with credit balance
+$customers = $pdo->query("
+    SELECT * FROM customers 
+    WHERE is_active = 1 
+    ORDER BY customer_name
+")->fetchAll();
+
+// Get recent payments
+$recent_payments = $pdo->query("
+    SELECT cp.*, c.customer_name, c.customer_code 
+    FROM credit_payments cp 
+    JOIN credit_sales cs ON cp.credit_sale_id = cs.id 
+    JOIN customers c ON cs.customer_id = c.id 
+    ORDER BY cp.payment_date DESC 
+    LIMIT 50
+")->fetchAll();
+
+$settings = $pdo->query("SELECT setting_key, setting_value FROM system_settings")->fetchAll(PDO::FETCH_KEY_PAIR);
+?>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Customer Payment</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.datatables.net/1.11.5/css/dataTables.bootstrap5.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        .stats-card {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border-radius: 15px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+    </style>
+</head>
+<body>
+    <?php include 'left_menu.php'; ?>
+    
+    <div class="main-content">
+        <div class="container-fluid">
+            <div class="d-flex justify-content-between align-items-center mb-4">
+                <h2><i class="fas fa-hand-holding-usd"></i> Customer Payment Collection</h2>
+                <a href="dashboard.php" class="btn btn-secondary">Back to Dashboard</a>
+            </div>
+            
+            <?php if($error): ?>
+                <div class="alert alert-danger"><?php echo $error; ?></div>
+            <?php endif; ?>
+            <?php if($success): ?>
+                <div class="alert alert-success"><?php echo $success; ?></div>
+            <?php endif; ?>
+            
+            <!-- Statistics -->
+            <div class="row">
+                <div class="col-md-4">
+                    <div class="stats-card">
+                        <i class="fas fa-users fa-2x"></i>
+                        <h3><?php echo count($customers); ?></h3>
+                        <p>Total Customers</p>
+                    </div>
+                </div>
+                <div class="col-md-4">
+                    <div class="stats-card" style="background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);">
+                        <i class="fas fa-money-bill-wave fa-2x"></i>
+                        <h3>BDT <?php 
+                            $total_due = 0;
+                            foreach($customers as $c) { $total_due += $c['current_balance']; }
+                            echo number_format($total_due, 2);
+                        ?></h3>
+                        <p>Total Outstanding</p>
+                    </div>
+                </div>
+                <div class="col-md-4">
+                    <div class="stats-card" style="background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);">
+                        <i class="fas fa-history fa-2x"></i>
+                        <h3><?php echo count($recent_payments); ?></h3>
+                        <p>Recent Payments</p>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="row">
+                <!-- Payment Form -->
+                <div class="col-md-5">
+                    <div class="card">
+                        <div class="card-header bg-primary text-white">
+                            <h5><i class="fas fa-plus-circle"></i> Record Customer Payment</h5>
+                        </div>
+                        <div class="card-body">
+                            <form method="POST" id="paymentForm">
+                                <div class="mb-3">
+                                    <label><i class="fas fa-user"></i> Select Customer</label>
+                                    <select name="customer_id" id="customer_id" class="form-control" required>
+                                        <option value="">-- Select Customer --</option>
+                                        <?php foreach($customers as $c): ?>
+                                            <option value="<?php echo $c['id']; ?>" 
+                                                    data-balance="<?php echo $c['current_balance']; ?>"
+                                                    data-name="<?php echo $c['customer_name']; ?>">
+                                                <?php echo $c['customer_name']; ?> (<?php echo $c['customer_code']; ?>) 
+                                                - Balance: BDT <?php echo number_format($c['current_balance'], 2); ?>
+                                            </option>
+                                        <?php endforeach; ?>
+                                    </select>
+                                </div>
+                                
+                                <div id="customerInfo" style="display:none;" class="alert alert-info">
+                                    <strong>Customer:</strong> <span id="selected_customer_name"></span><br>
+                                    <strong>Current Due:</strong> BDT <span id="selected_due_amount">0.00</span>
+                                </div>
+                                
+                                <div class="row">
+                                    <div class="col-md-6">
+                                        <div class="mb-3">
+                                            <label><i class="fas fa-calendar"></i> Payment Date</label>
+                                            <input type="date" name="payment_date" class="form-control" value="<?php echo date('Y-m-d'); ?>" required>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-6">
+                                        <div class="mb-3">
+                                            <label><i class="fas fa-money-bill"></i> Amount (BDT)</label>
+                                            <input type="number" name="amount" id="amount" class="form-control" step="0.01" required>
+                                        </div>
+                                    </div>
+                                </div>
+                                
+                                <div class="mb-3">
+                                    <label><i class="fas fa-credit-card"></i> Payment Method</label>
+                                    <select name="payment_method" class="form-control" required>
+                                        <option value="cash">Cash</option>
+                                        <option value="bank_transfer">Bank Transfer</option>
+                                        <option value="cheque">Cheque</option>
+                                        <option value="mobile_banking">Mobile Banking</option>
+                                    </select>
+                                </div>
+                                
+                                <div class="mb-3">
+                                    <label><i class="fas fa-comment"></i> Notes (Optional)</label>
+                                    <textarea name="notes" class="form-control" rows="2" placeholder="Payment reference, cheque number, etc."></textarea>
+                                </div>
+                                
+                                <button type="submit" name="record_payment" class="btn btn-success w-100">
+                                    <i class="fas fa-save"></i> Record Payment
+                                </button>
+                            </form>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Recent Payments -->
+                <div class="col-md-7">
+                    <div class="card">
+                        <div class="card-header bg-info text-white">
+                            <h5><i class="fas fa-history"></i> Recent Payment History</h5>
+                        </div>
+                        <div class="card-body">
+                            <div class="table-responsive">
+                                <table class="table table-bordered" id="paymentsTable">
+                                    <thead>
+                                        <tr>
+                                            <th>Date</th>
+                                            <th>Receipt No</th>
+                                            <th>Customer</th>
+                                            <th>Amount</th>
+                                            <th>Method</th>
+                                            <th>Notes</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <?php foreach($recent_payments as $pay): ?>
+                                        <tr>
+                                            <td><?php echo date('d/m/Y', strtotime($pay['payment_date'])); ?></td>
+                                            <td><?php echo $pay['receipt_no']; ?></td>
+                                            <td><?php echo $pay['customer_name']; ?> (<?php echo $pay['customer_code']; ?>)</td>
+                                            <td class="text-success fw-bold">BDT <?php echo number_format($pay['amount'], 2); ?></td>
+                                            <td><?php echo ucfirst($pay['payment_method']); ?></td>
+                                            <td><?php echo $pay['notes'] ?: '-'; ?></td>
+                                        </tr>
+                                        <?php endforeach; ?>
+                                    </tbody>
+                                 </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://cdn.datatables.net/1.11.5/js/jquery.dataTables.min.js"></script>
+    <script>
+        $(document).ready(function() {
+            $('#paymentsTable').DataTable({
+                order: [[0, 'desc']],
+                pageLength: 10
+            });
+        });
+        
+        // Show customer info when selected
+        document.getElementById('customer_id').addEventListener('change', function() {
+            let option = this.options[this.selectedIndex];
+            let balance = parseFloat(option.getAttribute('data-balance')) || 0;
+            let name = option.getAttribute('data-name') || '';
+            
+            if(this.value) {
+                document.getElementById('customerInfo').style.display = 'block';
+                document.getElementById('selected_customer_name').innerText = name;
+                document.getElementById('selected_due_amount').innerText = balance.toFixed(2);
+                document.getElementById('amount').max = balance;
+                document.getElementById('amount').placeholder = 'Max: ' + balance.toFixed(2);
+                document.getElementById('amount').value = balance;
+            } else {
+                document.getElementById('customerInfo').style.display = 'none';
+                document.getElementById('amount').value = '';
+            }
+        });
+        
+        // Validate amount
+        document.getElementById('amount').addEventListener('input', function() {
+            let max = parseFloat(document.getElementById('customer_id').options[document.getElementById('customer_id').selectedIndex]?.getAttribute('data-balance')) || 0;
+            let amount = parseFloat(this.value) || 0;
+            
+            if(amount > max) {
+                this.setCustomValidity('Amount cannot exceed due balance of BDT ' + max.toFixed(2));
+                this.style.borderColor = 'red';
+            } else {
+                this.setCustomValidity('');
+                this.style.borderColor = '';
+            }
+        });
+    </script>
+</body>
+</html>
