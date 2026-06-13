@@ -3,7 +3,7 @@
 -- https://www.phpmyadmin.net/
 --
 -- Host: 127.0.0.1
--- Generation Time: Jun 11, 2026 at 01:48 PM
+-- Generation Time: Jun 13, 2026 at 09:25 AM
 -- Server version: 10.4.32-MariaDB
 -- PHP Version: 8.2.12
 
@@ -46,7 +46,10 @@ INSERT INTO `activity_logs` (`id`, `user_id`, `action`, `description`, `ip_addre
 (3, 1, 'login', 'User logged in', '::1', '2026-06-11 08:47:34'),
 (4, 1, 'login', 'User logged in', '::1', '2026-06-11 08:47:46'),
 (5, 1, 'login', 'User logged in', '::1', '2026-06-11 09:18:01'),
-(6, 1, 'login', 'User logged in', '::1', '2026-06-11 11:20:20');
+(6, 1, 'login', 'User logged in', '::1', '2026-06-11 11:20:20'),
+(7, 1, 'login', 'User logged in', '::1', '2026-06-11 12:05:50'),
+(8, 1, 'login', 'User logged in', '::1', '2026-06-11 12:07:20'),
+(9, 1, 'login', 'User logged in', '::1', '2026-06-13 05:26:34');
 
 -- --------------------------------------------------------
 
@@ -208,7 +211,8 @@ CREATE TABLE `employees` (
 --
 
 INSERT INTO `employees` (`id`, `employee_id`, `full_name`, `designation`, `department`, `joining_date`, `basic_salary`, `phone`, `address`, `bank_account_no`, `is_active`) VALUES
-(1, 'EMP-001', 'Rafiqul Alam Rubel', 'sdfsdfs', 'Management', '2026-06-11', 4500.00, '01811458888', 'sdsdf', 'sfsdfs 52112121', 1);
+(1, 'EMP-001', 'Rafiqul Alam Rubel', 'sdfsdfs', 'Management', '2026-06-11', 4500.00, '01811458888', 'sdsdf', 'sfsdfs 52112121', 1),
+(2, 'EMP-002', 'BILLAL HOSSAIN', 'ASSISTANT MANAGER', 'Management', '2026-04-01', 15000.00, '', '', '', 1);
 
 -- --------------------------------------------------------
 
@@ -284,7 +288,8 @@ CREATE TABLE `fuel_receivings` (
 --
 
 INSERT INTO `fuel_receivings` (`id`, `receipt_no`, `receipt_date`, `supplier_name`, `tanker_no`, `challan_no`, `product_id`, `tank_id`, `expected_quantity`, `actual_quantity`, `shortage`, `freight_cost`, `freight_deduction`, `unit_price`, `total_amount`, `status`, `approved_by`) VALUES
-(1, 'RCV-20260611093408', '2026-06-11', 'Jamuna', 'Tank01', '1', 1, 1, 5000.00, 4500.00, 500.00, 0.00, 0.00, 84.00, 378000.00, 'approved', 1);
+(1, 'RCV-20260611093408', '2026-06-11', 'Jamuna', 'Tank01', '1', 1, 1, 5000.00, 4500.00, 500.00, 0.00, 0.00, 84.00, 378000.00, 'approved', 1),
+(2, 'RCV-20260613073918', '2026-06-13', 'Padma Oil', 'Dhaka-Ga-0145', '012546', 1, 1, 9000.00, 8750.00, 250.00, 0.00, 0.00, 62.50, 546875.00, 'approved', 1);
 
 -- --------------------------------------------------------
 
@@ -370,7 +375,7 @@ CREATE TABLE `nozzles` (
 
 INSERT INTO `nozzles` (`id`, `nozzle_name`, `tank_id`, `opening_meter`, `closing_meter`, `is_active`) VALUES
 (1, 'Nozzle Disel 01', 2, 0.00, 20.00, 1),
-(2, 'Nozzle CNG 01', 6, 0.00, 85.00, 1),
+(2, 'Nozzle CNG 01', 6, 0.00, 200.00, 1),
 (3, 'Nozzle CNG 02', 6, 0.00, 0.00, 1);
 
 -- --------------------------------------------------------
@@ -444,17 +449,19 @@ CREATE TABLE `rent_payments` (
   `month` varchar(7) NOT NULL,
   `amount` decimal(10,2) NOT NULL,
   `late_fee` decimal(10,2) DEFAULT 0.00,
-  `receipt_no` varchar(50) DEFAULT NULL,
   `payment_method` varchar(50) DEFAULT 'cash',
-  `notes` text DEFAULT NULL
+  `notes` text DEFAULT NULL,
+  `receipt_no` varchar(50) DEFAULT NULL,
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp()
 ) ENGINE=InnoDB DEFAULT CHARSET=latin1 COLLATE=latin1_swedish_ci;
 
 --
 -- Dumping data for table `rent_payments`
 --
 
-INSERT INTO `rent_payments` (`id`, `tenant_id`, `payment_date`, `month`, `amount`, `late_fee`, `receipt_no`, `payment_method`, `notes`) VALUES
-(1, 1, '2026-06-11', '2026-06', 1500.00, 0.00, 'RENT-20260611-952', NULL, '');
+INSERT INTO `rent_payments` (`id`, `tenant_id`, `payment_date`, `month`, `amount`, `late_fee`, `payment_method`, `notes`, `receipt_no`, `created_at`) VALUES
+(1, 1, '2026-06-13', '2026-06', 1500.00, 0.00, 'cash', '', 'RENT-20260613-700', '2026-06-13 07:06:23'),
+(2, 2, '2026-06-13', '2026-06', 1500.00, 0.00, 'cash', '', 'RENT-20260613-970', '2026-06-13 07:08:56');
 
 -- --------------------------------------------------------
 
@@ -499,7 +506,9 @@ INSERT INTO `sales` (`id`, `invoice_no`, `sale_date`, `shift_id`, `nozzle_id`, `
 (7, 'INV-20260611093118', '2026-06-11 13:31:18', 1, 2, 1, '', '', 'cash', 4, 10.00, 65.00, 650.00, 0.00, 0.00, 650.00, 1000.00, 350.00, NULL, 0),
 (8, 'INV-20260611120749', '2026-06-11 16:07:49', 1, 2, 1, '', '', 'cash', 4, 10.00, 65.00, 650.00, 0.00, 0.00, 650.00, 1000.00, 350.00, NULL, 0),
 (9, 'INV-20260611120918', '2026-06-11 16:09:18', 1, 1, 1, 'Rafiqul Alam Rubel', '01782382140', 'credit', 1, 10.00, 85.00, 850.00, 42.50, 17.00, 909.50, 909.50, 0.00, NULL, 0),
-(10, 'INV-20260611121716', '2026-06-11 16:17:16', 1, 2, 1, 'Rafiqul Alam Rubel', '01782382140', 'credit', 4, 10.00, 65.00, 650.00, 0.00, 0.00, 650.00, 0.00, -650.00, NULL, 0);
+(10, 'INV-20260611121716', '2026-06-11 16:17:16', 1, 2, 1, 'Rafiqul Alam Rubel', '01782382140', 'credit', 4, 10.00, 65.00, 650.00, 0.00, 0.00, 650.00, 0.00, -650.00, NULL, 0),
+(11, 'INV-20260613085132', '2026-06-13 12:51:32', 1, 2, 1, '', '', 'cash', 4, 100.00, 65.00, 6500.00, 0.00, 0.00, 6500.00, 6500.00, 0.00, NULL, 0),
+(12, 'INV-20260613085326', '2026-06-13 12:53:26', 1, 2, 1, '', '', 'cash', 4, 15.00, 65.00, 975.00, 0.00, 0.00, 975.00, 1000.00, 25.00, NULL, 0);
 
 -- --------------------------------------------------------
 
@@ -560,7 +569,10 @@ INSERT INTO `stock_ledger` (`id`, `product_id`, `tank_id`, `transaction_date`, `
 (18, 1, 1, '2026-06-11 15:53:13', 'adjustment', 'LEAK-10', 0.00, 1.35, 8898.65, 75.00),
 (19, 4, 6, '2026-06-11 16:07:49', 'sale', 'INV-20260611120749', 0.00, 10.00, 1925.00, NULL),
 (20, 1, 2, '2026-06-11 16:09:18', 'sale', 'INV-20260611120918', 0.00, 10.00, 4480.00, NULL),
-(21, 4, 6, '2026-06-11 16:17:16', 'sale', 'INV-20260611121716', 0.00, 10.00, 1915.00, NULL);
+(21, 4, 6, '2026-06-11 16:17:16', 'sale', 'INV-20260611121716', 0.00, 10.00, 1915.00, NULL),
+(22, 1, 1, '2026-06-13 11:39:18', 'receiving', 'RCV-20260613073918', 8750.00, 0.00, 17648.65, 62.50),
+(23, 4, 6, '2026-06-13 12:51:32', 'sale', 'INV-20260613085132', 0.00, 100.00, 1815.00, NULL),
+(24, 4, 6, '2026-06-13 12:53:26', 'sale', 'INV-20260613085326', 0.00, 15.00, 1800.00, NULL);
 
 -- --------------------------------------------------------
 
@@ -612,12 +624,12 @@ CREATE TABLE `tanks` (
 --
 
 INSERT INTO `tanks` (`id`, `tank_name`, `product_id`, `capacity_liters`, `current_stock_liters`, `calibration_factor`, `is_active`) VALUES
-(1, 'Diesel Tank-01', 1, 10000.00, 8898.65, 5.2345, 1),
+(1, 'Diesel Tank-01', 1, 10000.00, 17648.65, 5.2345, 1),
 (2, 'Diesel Tank-02', 1, 10000.00, 4480.00, 5.2345, 1),
 (3, 'Petrol Tank-01', 2, 8000.00, 4000.00, 4.1234, 1),
 (4, 'Petrol Tank-02', 2, 8000.00, 3500.00, 4.1234, 1),
 (5, 'Octane Tank-01', 3, 5000.00, 2500.00, 3.4567, 1),
-(6, 'CNG Tank-01', 4, 3000.00, 1915.00, 2.3456, 1),
+(6, 'CNG Tank-01', 4, 3000.00, 1800.00, 2.3456, 1),
 (7, 'LPG Tank-01', 5, 2000.00, 1500.00, 1.2345, 1);
 
 -- --------------------------------------------------------
@@ -645,7 +657,8 @@ CREATE TABLE `tenants` (
 --
 
 INSERT INTO `tenants` (`id`, `tenant_name`, `shop_no`, `monthly_rent`, `agreement_start`, `agreement_end`, `phone`, `is_active`, `email`, `address`, `security_deposit`) VALUES
-(1, 'Rafiqul Alam', 'Shop-01', 1500.00, '2026-05-01', '2026-08-31', '01782382140', 1, NULL, NULL, 0.00);
+(1, 'Rafiqul Alam', 'Shop-01', 100.00, '2026-05-01', '2026-08-31', '01782382140', 0, '', '', 0.00),
+(2, 'Rafiqul Alam', 'Shop-01', 1500.00, '2026-06-01', '2027-05-31', '01782382140', 1, 'admin@demo.com', '', 5000.00);
 
 -- --------------------------------------------------------
 
@@ -699,7 +712,12 @@ INSERT INTO `vouchers` (`id`, `voucher_no`, `voucher_type`, `date`, `narration`,
 (1, 'RENT-20260611091902', 'receipt', '2026-06-11', 'Rent collection from tenant ID: 1 - Month: 2026-06', 1, NULL, 'approved', '2026-06-11 07:19:02'),
 (2, 'PURCH-20260611093408', 'payment', '2026-06-11', 'Fuel purchase from Jamuna - RCV-20260611093408', 1, NULL, 'approved', '2026-06-11 07:34:08'),
 (11, 'LOSS-20260611114155445', 'journal', '2026-06-11', 'Stock loss adjustment - Tank ID: 1 - Variance: 600.00 Liters', 1, NULL, 'approved', '2026-06-11 09:41:55'),
-(12, 'LOSS-20260611115313523', 'journal', '2026-06-11', 'Stock loss adjustment - Tank: Diesel Tank-01 - Variance: 1.35 Liters - Rate: 75.00/L', 1, NULL, 'approved', '2026-06-11 09:53:13');
+(12, 'LOSS-20260611115313523', 'journal', '2026-06-11', 'Stock loss adjustment - Tank: Diesel Tank-01 - Variance: 1.35 Liters - Rate: 75.00/L', 1, NULL, 'approved', '2026-06-11 09:53:13'),
+(13, 'PURCH-20260613073918', 'payment', '2026-06-13', 'Fuel purchase from Padma Oil - RCV-20260613073918', 1, NULL, 'approved', '2026-06-13 05:39:18'),
+(14, 'CASH-20260613085132775', 'receipt', '2026-06-13', 'Cash sale - Invoice: INV-20260613085132 - Amount: BDT 6500', 1, NULL, 'approved', '2026-06-13 06:51:32'),
+(15, 'CASH-20260613085326926', 'receipt', '2026-06-13', 'Cash sale - Invoice: INV-20260613085326 - Amount: BDT 975', 1, NULL, 'approved', '2026-06-13 06:53:26'),
+(16, 'RENT-20260613090623', 'receipt', '2026-06-13', 'Rent collection from tenant ID: 1 - Month: June 2026', 1, NULL, 'approved', '2026-06-13 07:06:23'),
+(17, 'RENT-20260613090856', 'receipt', '2026-06-13', 'Rent collection from tenant ID: 2 - Month: June 2026', 1, NULL, 'approved', '2026-06-13 07:08:56');
 
 -- --------------------------------------------------------
 
@@ -724,7 +742,11 @@ INSERT INTO `voucher_items` (`id`, `voucher_id`, `account_id`, `debit_amount`, `
 (17, 11, 11, 45000.00, 0.00, 'Stock loss from tank adjustment'),
 (18, 11, 3, 0.00, 45000.00, 'Inventory reduction due to loss'),
 (19, 12, 11, 101.25, 0.00, 'Stock loss from Diesel Tank-01 - 1.3500000000004 Liters'),
-(20, 12, 3, 0.00, 101.25, 'Inventory reduction due to loss');
+(20, 12, 3, 0.00, 101.25, 'Inventory reduction due to loss'),
+(21, 14, 1, 6500.00, 0.00, 'Cash sale - Invoice: INV-20260613085132'),
+(22, 14, 8, 0.00, 6500.00, 'Fuel sale revenue - Invoice: INV-20260613085132'),
+(23, 15, 1, 975.00, 0.00, 'Cash sale - Invoice: INV-20260613085326'),
+(24, 15, 8, 0.00, 975.00, 'Fuel sale revenue - Invoice: INV-20260613085326');
 
 --
 -- Indexes for dumped tables
@@ -938,7 +960,7 @@ ALTER TABLE `voucher_items`
 -- AUTO_INCREMENT for table `activity_logs`
 --
 ALTER TABLE `activity_logs`
-  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=7;
+  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=10;
 
 --
 -- AUTO_INCREMENT for table `attendance`
@@ -974,7 +996,7 @@ ALTER TABLE `customers`
 -- AUTO_INCREMENT for table `employees`
 --
 ALTER TABLE `employees`
-  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=2;
+  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=3;
 
 --
 -- AUTO_INCREMENT for table `expenses`
@@ -992,7 +1014,7 @@ ALTER TABLE `fuel_products`
 -- AUTO_INCREMENT for table `fuel_receivings`
 --
 ALTER TABLE `fuel_receivings`
-  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=2;
+  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=3;
 
 --
 -- AUTO_INCREMENT for table `leakage_adjustments`
@@ -1040,13 +1062,13 @@ ALTER TABLE `payroll`
 -- AUTO_INCREMENT for table `rent_payments`
 --
 ALTER TABLE `rent_payments`
-  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=2;
+  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=3;
 
 --
 -- AUTO_INCREMENT for table `sales`
 --
 ALTER TABLE `sales`
-  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=11;
+  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=13;
 
 --
 -- AUTO_INCREMENT for table `shifts`
@@ -1058,7 +1080,7 @@ ALTER TABLE `shifts`
 -- AUTO_INCREMENT for table `stock_ledger`
 --
 ALTER TABLE `stock_ledger`
-  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=22;
+  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=25;
 
 --
 -- AUTO_INCREMENT for table `system_settings`
@@ -1076,7 +1098,7 @@ ALTER TABLE `tanks`
 -- AUTO_INCREMENT for table `tenants`
 --
 ALTER TABLE `tenants`
-  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=2;
+  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=3;
 
 --
 -- AUTO_INCREMENT for table `users`
@@ -1088,13 +1110,13 @@ ALTER TABLE `users`
 -- AUTO_INCREMENT for table `vouchers`
 --
 ALTER TABLE `vouchers`
-  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=13;
+  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=18;
 
 --
 -- AUTO_INCREMENT for table `voucher_items`
 --
 ALTER TABLE `voucher_items`
-  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=21;
+  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=25;
 
 --
 -- Constraints for dumped tables
@@ -1187,7 +1209,7 @@ ALTER TABLE `payroll`
 -- Constraints for table `rent_payments`
 --
 ALTER TABLE `rent_payments`
-  ADD CONSTRAINT `rent_payments_ibfk_1` FOREIGN KEY (`tenant_id`) REFERENCES `tenants` (`id`);
+  ADD CONSTRAINT `rent_payments_ibfk_1` FOREIGN KEY (`tenant_id`) REFERENCES `tenants` (`id`) ON DELETE CASCADE;
 
 --
 -- Constraints for table `sales`

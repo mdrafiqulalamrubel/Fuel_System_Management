@@ -6,6 +6,37 @@ $user = getCurrentUser();
 $error = '';
 $success = '';
 
+// Auto select shift based on current time
+function getCurrentShift($pdo) {
+    $currentHour = date('H');
+    $currentMinute = date('i');
+    $currentTimeValue = $currentHour * 60 + $currentMinute;
+    
+    $stmt = $pdo->prepare("SELECT * FROM shift_schedule WHERE is_active = 1");
+    $stmt->execute();
+    $shifts = $stmt->fetchAll();
+    
+    foreach($shifts as $shift) {
+        $startParts = explode(':', $shift['start_time']);
+        $endParts = explode(':', $shift['end_time']);
+        
+        $startMinutes = intval($startParts[0]) * 60 + intval($startParts[1]);
+        $endMinutes = intval($endParts[0]) * 60 + intval($endParts[1]);
+        
+        // Handle overnight shifts (e.g., Night shift from 00:00 to 08:00)
+        if($endMinutes < $startMinutes) {
+            if($currentTimeValue >= $startMinutes || $currentTimeValue <= $endMinutes) {
+                return $shift['id'];
+            }
+        } else {
+            if($currentTimeValue >= $startMinutes && $currentTimeValue <= $endMinutes) {
+                return $shift['id'];
+            }
+        }
+    }
+    return null;
+}
+
 // Get active nozzles with stock info
 $nozzles = $pdo->query("
     SELECT n.*, t.product_id, p.product_name, p.unit_price, t.current_stock_liters 
@@ -25,7 +56,9 @@ $products = $pdo->query("
     GROUP BY p.id
 ")->fetchAll();
 
-$shifts = $pdo->query("SELECT * FROM shifts WHERE is_active = 1")->fetchAll();
+// Get shifts from shift_schedule table
+$shifts = $pdo->query("SELECT * FROM shift_schedule WHERE is_active = 1 ORDER BY start_time")->fetchAll();
+$auto_shift_id = getCurrentShift($pdo);
 
 // Process sale
 if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['make_sale'])) {
@@ -275,6 +308,7 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
         .low-stock { background: #dc3545 !important; }
         .print-toast { position: fixed; bottom: 20px; right: 20px; background: #4CAF50; color: white; padding: 15px 20px; border-radius: 5px; display: none; z-index: 9999; }
         .total-amount { font-size: 32px; color: #28a745; }
+        .shift-note { font-size: 11px; color: #28a745; margin-top: 3px; display: block; }
     </style>
 </head>
 <body>
@@ -304,9 +338,14 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                                             <select name="shift_id" class="form-control" required>
                                                 <option value="">Select Shift</option>
                                                 <?php foreach($shifts as $shift): ?>
-                                                    <option value="<?php echo $shift['id']; ?>"><?php echo $shift['shift_name']; ?></option>
+                                                    <option value="<?php echo $shift['id']; ?>" <?php echo ($auto_shift_id == $shift['id']) ? 'selected' : ''; ?>>
+                                                        <?php echo $shift['shift_name']; ?> (<?php echo date('h:i A', strtotime($shift['start_time'])); ?> - <?php echo date('h:i A', strtotime($shift['end_time'])); ?>)
+                                                    </option>
                                                 <?php endforeach; ?>
                                             </select>
+                                            <span class="shift-note">
+                                                <i class="fas fa-info-circle"></i> Shift auto-selected based on current time (<?php echo date('h:i A'); ?>)
+                                            </span>
                                         </div>
                                     </div>
                                     <div class="col-md-6">
@@ -381,7 +420,7 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                                 </div>
                                 
                                 <div class="amount-display">
-                                    <table>
+                                    <table width="100%">
                                         <tr>
                                             <td><strong>TOTAL AMOUNT:</strong></td>
                                             <td class="text-end total-amount"><?php echo $currency; ?> <span id="total_amount">0.00</span></td>

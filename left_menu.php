@@ -537,6 +537,13 @@ $user = getCurrentUser();
                     <span>Manage Users</span>
                 </a>
             </li>
+
+            <li class="nav-item <?php echo $current_page == 'shift_schedule.php' ? 'active' : ''; ?>">
+                <a class="nav-link" href="shift_schedule.php">
+                    <i class="fas fa-clock"></i>
+                    <span>Shift Schedule</span>
+                </a>
+            </li>
         </div>
         
         <!-- Logout -->
