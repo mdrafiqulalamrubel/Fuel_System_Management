@@ -6,7 +6,7 @@ $user = getCurrentUser();
 $error = '';
 $success = '';
 
-// Get active nozzles
+// Get active nozzles with stock info
 $nozzles = $pdo->query("
     SELECT n.*, t.product_id, p.product_name, p.unit_price, t.current_stock_liters 
     FROM nozzles n 
@@ -16,7 +16,15 @@ $nozzles = $pdo->query("
     ORDER BY n.nozzle_name
 ")->fetchAll();
 
-$products = $pdo->query("SELECT * FROM fuel_products WHERE is_active = 1")->fetchAll();
+// Get products with stock info (from tanks)
+$products = $pdo->query("
+    SELECT p.*, COALESCE(SUM(t.current_stock_liters), 0) as total_stock
+    FROM fuel_products p 
+    LEFT JOIN tanks t ON p.id = t.product_id
+    WHERE p.is_active = 1
+    GROUP BY p.id
+")->fetchAll();
+
 $shifts = $pdo->query("SELECT * FROM shifts WHERE is_active = 1")->fetchAll();
 
 // Process sale
@@ -31,21 +39,31 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['make_sale'])) {
     $customer_name = isset($_POST['customer_name']) ? $_POST['customer_name'] : '';
     $customer_phone = isset($_POST['customer_phone']) ? $_POST['customer_phone'] : '';
     
-    $subtotal = $quantity * $unit_price;
-    
-    $stmt = $pdo->prepare("SELECT vat_percentage, tax_percentage FROM fuel_products WHERE id = ?");
-    $stmt->execute([$product_id]);
-    $product = $stmt->fetch();
-    
-    $vat_amount = $subtotal * (floatval($product['vat_percentage']) / 100);
-    $tax_amount = $subtotal * (floatval($product['tax_percentage']) / 100);
-    $total_amount = $subtotal + $vat_amount + $tax_amount;
+    // Calculate total (VAT & Tax already included in unit price)
+    $total_amount = $quantity * $unit_price;
+    $subtotal = $total_amount;
+    $vat_amount = 0;
+    $tax_amount = 0;
     
     $received = isset($_POST['received']) ? floatval($_POST['received']) : 0;
     $change = $received - $total_amount;
     
     try {
         $pdo->beginTransaction();
+        
+        // Check stock availability
+        $stmt = $pdo->prepare("
+            SELECT t.current_stock_liters 
+            FROM tanks t 
+            JOIN nozzles n ON n.tank_id = t.id 
+            WHERE n.id = ?
+        ");
+        $stmt->execute([$nozzle_id]);
+        $current_stock = $stmt->fetch()['current_stock_liters'] ?? 0;
+        
+        if($current_stock < $quantity) {
+            throw new Exception("Insufficient stock! Available: " . number_format($current_stock, 2) . " Liters");
+        }
         
         // Insert sale
         $stmt = $pdo->prepare("INSERT INTO sales (invoice_no, shift_id, nozzle_id, operator_id, customer_name, customer_phone, sale_type, product_id, quantity_liters, unit_price, subtotal, vat_amount, tax_amount, total_amount, received_amount, change_amount) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
@@ -62,7 +80,7 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['make_sale'])) {
         $stmt = $pdo->prepare("INSERT INTO stock_ledger (product_id, tank_id, transaction_type, reference_no, out_quantity, balance_quantity) SELECT ?, tank_id, 'sale', ?, ?, (SELECT current_stock_liters FROM tanks WHERE id = tank_id) FROM nozzles WHERE id = ?");
         $stmt->execute([$product_id, $invoice_no, $quantity, $nozzle_id]);
         
-        // Get account IDs - FIXED with better error handling
+        // Get account IDs
         $stmt = $pdo->prepare("SELECT id FROM chart_of_accounts WHERE account_code = '1300'");
         $stmt->execute();
         $ar_account = $stmt->fetch();
@@ -75,11 +93,6 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['make_sale'])) {
         $stmt->execute();
         $cash_account = $stmt->fetch();
         
-        // Log account IDs for debugging
-        error_log("AR Account ID: " . ($ar_account['id'] ?? 'NOT FOUND'));
-        error_log("Sales Account ID: " . ($sales_account['id'] ?? 'NOT FOUND'));
-        error_log("Cash Account ID: " . ($cash_account['id'] ?? 'NOT FOUND'));
-        
         $customer_id = null;
         
         // Handle Credit Sale
@@ -91,7 +104,6 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['make_sale'])) {
                 $existing = $stmt->fetch();
                 if($existing) {
                     $customer_id = $existing['id'];
-                    // Update customer name if changed
                     $stmt = $pdo->prepare("UPDATE customers SET customer_name = ? WHERE id = ?");
                     $stmt->execute([$customer_name, $customer_id]);
                 } else {
@@ -101,7 +113,6 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['make_sale'])) {
                     $customer_id = $pdo->lastInsertId();
                 }
             } else {
-                // Check if customer exists by name
                 $stmt = $pdo->prepare("SELECT id FROM customers WHERE customer_name = ?");
                 $stmt->execute([$customer_name]);
                 $existing = $stmt->fetch();
@@ -124,7 +135,7 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['make_sale'])) {
             $stmt = $pdo->prepare("UPDATE customers SET current_balance = current_balance + ? WHERE id = ?");
             $stmt->execute([$total_amount, $customer_id]);
             
-            // Create accounting entry for credit sale - FIXED
+            // Create accounting entry for credit sale
             if($ar_account && $sales_account) {
                 $voucher_no = 'CREDIT-' . date('YmdHis') . rand(100, 999);
                 $narration = "Credit sale to $customer_name - Invoice: $invoice_no - Amount: BDT $total_amount";
@@ -133,7 +144,6 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['make_sale'])) {
                 $stmt->execute([$voucher_no, $narration, $user['id']]);
                 $voucher_id = $pdo->lastInsertId();
                 
-                // Debit Accounts Receivable (1300), Credit Sales Revenue (4000)
                 $stmt = $pdo->prepare("INSERT INTO voucher_items (voucher_id, account_id, debit_amount, credit_amount, description) VALUES 
                     (?, ?, ?, ?, ?),
                     (?, ?, ?, ?, ?)");
@@ -141,11 +151,6 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['make_sale'])) {
                     $voucher_id, $ar_account['id'], $total_amount, 0, "Credit sale to $customer_name - Invoice: $invoice_no",
                     $voucher_id, $sales_account['id'], 0, $total_amount, "Fuel sale revenue - Invoice: $invoice_no"
                 ]);
-                
-                $success_msg = "Credit sale recorded! Accounts Receivable updated.";
-            } else {
-                $success_msg = "Credit sale recorded but accounting accounts not found!";
-                error_log("ERROR: AR Account or Sales Account not found in chart_of_accounts");
             }
         } 
         // Handle Cash Sale
@@ -158,7 +163,6 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['make_sale'])) {
                 $stmt->execute([$voucher_no, $narration, $user['id']]);
                 $voucher_id = $pdo->lastInsertId();
                 
-                // Debit Cash (1000), Credit Sales Revenue (4000)
                 $stmt = $pdo->prepare("INSERT INTO voucher_items (voucher_id, account_id, debit_amount, credit_amount, description) VALUES 
                     (?, ?, ?, ?, ?),
                     (?, ?, ?, ?, ?)");
@@ -186,8 +190,8 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['make_sale'])) {
             'quantity' => $quantity,
             'unit_price' => $unit_price,
             'subtotal' => $subtotal,
-            'vat' => $vat_amount,
-            'tax' => $tax_amount,
+            'vat' => 0,
+            'tax' => 0,
             'total' => $total_amount,
             'received' => $received,
             'change' => $change,
@@ -211,6 +215,9 @@ $open_print = isset($_GET['print']) && isset($_SESSION['open_print']);
 if($open_print) {
     unset($_SESSION['open_print']);
 }
+
+$settings = $pdo->query("SELECT setting_key, setting_value FROM system_settings")->fetchAll(PDO::FETCH_KEY_PAIR);
+$currency = $settings['currency_symbol'] ?? 'BDT';
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -225,10 +232,49 @@ if($open_print) {
         .pos-card { background: white; border-radius: 15px; box-shadow: 0 2px 10px rgba(0,0,0,0.05); margin-bottom: 20px; overflow: hidden; }
         .pos-card-header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 15px 20px; font-weight: 600; }
         .pos-card-body { padding: 20px; }
-        .product-btn { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border: none; border-radius: 10px; padding: 15px; margin: 5px; width: 100%; }
-        .amount-display { font-size: 24px; font-weight: bold; text-align: right; background: #f8f9fa; padding: 15px; border-radius: 10px; margin-bottom: 10px; }
-        .nozzle-btn { background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%); color: white; border: none; border-radius: 10px; padding: 12px; margin: 5px; width: 100%; }
+        .product-btn { 
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); 
+            color: white; 
+            border: none; 
+            border-radius: 10px; 
+            padding: 15px; 
+            margin: 5px; 
+            width: 100%;
+            transition: transform 0.2s;
+        }
+        .product-btn:hover { transform: translateY(-3px); color: white; }
+        .product-stock { 
+            font-size: 11px; 
+            margin-top: 5px; 
+            display: block;
+            background: rgba(255,255,255,0.2);
+            padding: 3px 8px;
+            border-radius: 15px;
+        }
+        .amount-display { font-size: 28px; font-weight: bold; text-align: right; background: #f8f9fa; padding: 15px; border-radius: 10px; margin-bottom: 10px; }
+        .amount-display table { width: 100%; }
+        .nozzle-btn { 
+            background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%); 
+            color: white; 
+            border: none; 
+            border-radius: 10px; 
+            padding: 12px; 
+            margin: 5px; 
+            width: 100%;
+            transition: all 0.2s;
+        }
+        .nozzle-btn:hover, .nozzle-btn.active { background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%); transform: scale(1.02); }
+        .nozzle-stock {
+            font-size: 10px;
+            margin-top: 5px;
+            display: block;
+            background: rgba(255,255,255,0.2);
+            padding: 2px 6px;
+            border-radius: 12px;
+        }
+        .low-stock { background: #dc3545 !important; }
         .print-toast { position: fixed; bottom: 20px; right: 20px; background: #4CAF50; color: white; padding: 15px 20px; border-radius: 5px; display: none; z-index: 9999; }
+        .total-amount { font-size: 32px; color: #28a745; }
     </style>
 </head>
 <body>
@@ -272,8 +318,10 @@ if($open_print) {
                                                     <option value="<?php echo $nozzle['id']; ?>" 
                                                             data-product="<?php echo $nozzle['product_id']; ?>"
                                                             data-product-name="<?php echo $nozzle['product_name']; ?>"
-                                                            data-price="<?php echo $nozzle['unit_price']; ?>">
+                                                            data-price="<?php echo $nozzle['unit_price']; ?>"
+                                                            data-stock="<?php echo $nozzle['current_stock_liters']; ?>">
                                                         <?php echo $nozzle['nozzle_name']; ?> - <?php echo $nozzle['product_name']; ?>
+                                                        (Stock: <?php echo number_format($nozzle['current_stock_liters'], 0); ?> L)
                                                     </option>
                                                 <?php endforeach; ?>
                                             </select>
@@ -291,7 +339,7 @@ if($open_print) {
                                     </div>
                                     <div class="col-md-6">
                                         <div class="mb-3">
-                                            <label><i class="fas fa-money-bill"></i> Unit Price (BDT/L)</label>
+                                            <label><i class="fas fa-money-bill"></i> Unit Price (<?php echo $currency; ?>/L)</label>
                                             <input type="number" name="unit_price" id="unit_price" class="form-control" step="0.01" readonly required>
                                         </div>
                                     </div>
@@ -333,11 +381,11 @@ if($open_print) {
                                 </div>
                                 
                                 <div class="amount-display">
-                                    <table width="100%">
-                                        <tr><td>Subtotal:</td><td class="text-end">BDT <span id="subtotal">0.00</span></td></tr>
-                                        <tr><td>VAT (5%):</td><td class="text-end">BDT <span id="vat_amount">0.00</span></td></tr>
-                                        <tr><td>Tax (2%):</td><td class="text-end">BDT <span id="tax_amount">0.00</span></td></tr>
-                                        <tr class="fw-bold"><td>TOTAL:</td><td class="text-end">BDT <span id="total_amount">0.00</span></td></tr>
+                                    <table>
+                                        <tr>
+                                            <td><strong>TOTAL AMOUNT:</strong></td>
+                                            <td class="text-end total-amount"><?php echo $currency; ?> <span id="total_amount">0.00</span></td>
+                                        </tr>
                                     </table>
                                 </div>
                                 
@@ -345,13 +393,13 @@ if($open_print) {
                                     <div class="row">
                                         <div class="col-md-6">
                                             <div class="mb-3">
-                                                <label>Received Amount (BDT)</label>
+                                                <label>Received Amount (<?php echo $currency; ?>)</label>
                                                 <input type="number" name="received" id="received" class="form-control" step="0.01" value="0">
                                             </div>
                                         </div>
                                         <div class="col-md-6">
                                             <div class="mb-3">
-                                                <label>Change (BDT)</label>
+                                                <label>Change (<?php echo $currency; ?>)</label>
                                                 <input type="text" id="change_amount" class="form-control" readonly>
                                             </div>
                                         </div>
@@ -367,21 +415,28 @@ if($open_print) {
                 </div>
                 
                 <div class="col-md-5">
+                    <!-- Quick Products with Stock -->
                     <div class="pos-card">
                         <div class="pos-card-header">
                             <i class="fas fa-box"></i> Quick Products
                         </div>
                         <div class="pos-card-body">
                             <div class="row">
-                                <?php foreach($products as $product): ?>
+                                <?php foreach($products as $product): 
+                                    $stock = $product['total_stock'] ?? 0;
+                                    $low_stock_class = $stock < 500 ? 'low-stock' : '';
+                                ?>
                                     <div class="col-6 mb-2">
-                                        <button type="button" class="product-btn quick-product" 
+                                        <button type="button" class="product-btn quick-product <?php echo $low_stock_class; ?>" 
                                                 data-id="<?php echo $product['id']; ?>"
                                                 data-name="<?php echo $product['product_name']; ?>"
                                                 data-price="<?php echo $product['unit_price']; ?>">
                                             <i class="fas fa-gas-pump"></i><br>
                                             <strong><?php echo $product['product_name']; ?></strong><br>
-                                            BDT <?php echo number_format($product['unit_price'], 2); ?>/L
+                                            <?php echo $currency; ?> <?php echo number_format($product['unit_price'], 2); ?>/L
+                                            <span class="product-stock">
+                                                <i class="fas fa-warehouse"></i> Stock: <?php echo number_format($stock, 0); ?> L
+                                            </span>
                                         </button>
                                     </div>
                                 <?php endforeach; ?>
@@ -389,22 +444,30 @@ if($open_print) {
                         </div>
                     </div>
                     
+                    <!-- Available Nozzles with Stock -->
                     <div class="pos-card">
                         <div class="pos-card-header">
                             <i class="fas fa-oil-can"></i> Available Nozzles
                         </div>
                         <div class="pos-card-body">
                             <div class="row">
-                                <?php foreach($nozzles as $nozzle): ?>
+                                <?php foreach($nozzles as $nozzle): 
+                                    $stock = $nozzle['current_stock_liters'];
+                                    $low_stock_class = $stock < 500 ? 'low-stock' : '';
+                                ?>
                                     <div class="col-6 mb-2">
-                                        <button type="button" class="nozzle-btn quick-nozzle" 
+                                        <button type="button" class="nozzle-btn quick-nozzle <?php echo $low_stock_class; ?>" 
                                                 data-id="<?php echo $nozzle['id']; ?>"
                                                 data-product="<?php echo $nozzle['product_id']; ?>"
                                                 data-product-name="<?php echo $nozzle['product_name']; ?>"
-                                                data-price="<?php echo $nozzle['unit_price']; ?>">
+                                                data-price="<?php echo $nozzle['unit_price']; ?>"
+                                                data-stock="<?php echo $stock; ?>">
                                             <i class="fas fa-oil-can"></i><br>
                                             <strong><?php echo $nozzle['nozzle_name']; ?></strong><br>
                                             <small><?php echo $nozzle['product_name']; ?></small>
+                                            <span class="nozzle-stock">
+                                                <i class="fas fa-warehouse"></i> Stock: <?php echo number_format($stock, 0); ?> L
+                                            </span>
                                         </button>
                                     </div>
                                 <?php endforeach; ?>
@@ -449,6 +512,7 @@ if($open_print) {
                 document.getElementById('product_name').value = this.getAttribute('data-product-name');
                 document.getElementById('product_id').value = this.getAttribute('data-product');
                 document.getElementById('unit_price').value = this.getAttribute('data-price');
+                
                 document.querySelectorAll('.quick-nozzle').forEach(b => b.classList.remove('active'));
                 this.classList.add('active');
                 calculateTotal();
@@ -485,14 +549,8 @@ if($open_print) {
         function calculateTotal() {
             let qty = parseFloat(document.getElementById('quantity').value) || 0;
             let price = parseFloat(document.getElementById('unit_price').value) || 0;
-            let subtotal = qty * price;
-            let vat = subtotal * 0.05;
-            let tax = subtotal * 0.02;
-            let total = subtotal + vat + tax;
+            let total = qty * price;
             
-            document.getElementById('subtotal').innerText = subtotal.toFixed(2);
-            document.getElementById('vat_amount').innerText = vat.toFixed(2);
-            document.getElementById('tax_amount').innerText = tax.toFixed(2);
             document.getElementById('total_amount').innerText = total.toFixed(2);
             calculateChange();
         }
@@ -511,6 +569,16 @@ if($open_print) {
             
             if(!nozzle) { e.preventDefault(); alert('Please select a nozzle'); return false; }
             if(!quantity || quantity <= 0) { e.preventDefault(); alert('Please enter valid quantity'); return false; }
+            
+            // Check stock limit
+            let selectedNozzle = document.getElementById('nozzle_id').options[document.getElementById('nozzle_id').selectedIndex];
+            let availableStock = parseFloat(selectedNozzle.getAttribute('data-stock')) || 0;
+            
+            if(parseFloat(quantity) > availableStock) {
+                e.preventDefault();
+                alert('Insufficient stock! Available: ' + availableStock.toFixed(2) + ' Liters');
+                return false;
+            }
             
             if(saleType == 'credit') {
                 let customerName = document.getElementById('customer_name').value;

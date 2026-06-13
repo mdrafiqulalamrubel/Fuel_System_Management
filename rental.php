@@ -61,15 +61,15 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['record_payment'])) {
     $tenant_id = $_POST['tenant_id'];
     $payment_date = $_POST['payment_date'];
     $month = $_POST['month']; // Format: YYYY-MM
-    $amount = $_POST['amount'];
-    $late_fee = isset($_POST['late_fee']) ? $_POST['late_fee'] : 0;
+    $amount = floatval($_POST['amount']);
+    $late_fee = isset($_POST['late_fee']) ? floatval($_POST['late_fee']) : 0;
     $payment_method = isset($_POST['payment_method']) ? $_POST['payment_method'] : 'cash';
     $notes = isset($_POST['notes']) ? $_POST['notes'] : '';
     $receipt_no = 'RENT-' . date('Ymd') . '-' . str_pad(rand(1, 999), 3, '0', STR_PAD_LEFT);
     
     // Ensure month is in correct format (YYYY-MM)
     if(strlen($month) == 7 && substr($month, 4, 1) == '-') {
-        // Valid format
+        // Valid format - keep as is
     } else {
         $month = date('Y-m', strtotime($month . '-01'));
     }
@@ -84,8 +84,13 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['record_payment'])) {
             throw new Exception("Payment for month " . date('F Y', strtotime($month . '-01')) . " already recorded!");
         }
         
+        // Insert payment
         $stmt = $pdo->prepare("INSERT INTO rent_payments (tenant_id, payment_date, month, amount, late_fee, payment_method, notes, receipt_no) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
         $stmt->execute([$tenant_id, $payment_date, $month, $amount, $late_fee, $payment_method, $notes, $receipt_no]);
+        
+        // Update customer current balance in tenants table (if you have this field)
+        // $stmt = $pdo->prepare("UPDATE tenants SET current_balance = current_balance - ? WHERE id = ?");
+        // $stmt->execute([$amount, $tenant_id]);
         
         // Create accounting entry
         $voucher_no = 'RENT-' . date('YmdHis');
@@ -94,9 +99,6 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['record_payment'])) {
         
         $pdo->commit();
         $success = "Payment recorded! Receipt: $receipt_no";
-        
-        // Redirect to refresh the page
-        echo "<script>setTimeout(function(){ window.location.href='rental.php?tab=tenants'; }, 1500);</script>";
         
     } catch(Exception $e) {
         $pdo->rollBack();
@@ -122,7 +124,7 @@ $payments = $pdo->query("
     LIMIT 100
 ")->fetchAll();
 
-// Calculate dues for each tenant - FIXED VERSION
+// Calculate dues for each tenant - CORRECTED VERSION
 $tenant_dues = [];
 foreach($tenants as $tenant) {
     // Get all payments for this tenant
@@ -134,74 +136,55 @@ foreach($tenants as $tenant) {
     $paid_months_list = [];
     foreach($paid_records as $pr) {
         $paid_amount += $pr['amount'];
-        $paid_months_list[] = $pr['month'];
+        // Ensure month is in YYYY-MM format
+        $month_key = (strlen($pr['month']) == 7) ? $pr['month'] : date('Y-m', strtotime($pr['month']));
+        $paid_months_list[] = $month_key;
     }
     
     // Calculate due amount properly
     $due_amount = 0;
     $due_months = [];
     
-    // If tenant has agreement start date, calculate from that month
+    // Get current date
+    $now = new DateTime();
+    $now->modify('first day of this month');
+    $current_month_key = $now->format('Y-m');
+    
+    // Get agreement start date
     if($tenant['agreement_start'] && $tenant['agreement_start'] != '0000-00-00') {
         $start = new DateTime($tenant['agreement_start']);
         $start->modify('first day of this month');
-        $now = new DateTime();
-        $now->modify('first day of this month');
-        
-        // Calculate months difference
-        $interval = $start->diff($now);
-        $total_months = ($interval->y * 12) + $interval->m;
-        
-        // For each month from start to current month
-        for($i = 0; $i <= $total_months; $i++) {
-            $month_date = clone $start;
-            $month_date->modify("+$i months");
-            $month_key = $month_date->format('Y-m');
-            
-            // Check if this month has been paid
-            $is_paid = false;
-            foreach($paid_records as $pr) {
-                if($pr['month'] == $month_key) {
-                    $is_paid = true;
-                    break;
-                }
-            }
-            
-            if(!$is_paid) {
-                $due_months[] = $month_key;
-                $due_amount += $tenant['monthly_rent'];
-            }
-        }
     } else {
-        // If no agreement date, calculate based on payments
-        if(!empty($paid_records)) {
-            $earliest_paid = min(array_column($paid_records, 'month'));
-            $start = new DateTime($earliest_paid . '-01');
+        // If no agreement date, use the earliest payment month or current month
+        if(!empty($paid_months_list)) {
+            $start = new DateTime(min($paid_months_list) . '-01');
             $start->modify('first day of this month');
-            $now = new DateTime();
-            $now->modify('first day of this month');
-            
-            $interval = $start->diff($now);
-            $total_months = ($interval->y * 12) + $interval->m;
-            
-            for($i = 0; $i <= $total_months; $i++) {
-                $month_date = clone $start;
-                $month_date->modify("+$i months");
-                $month_key = $month_date->format('Y-m');
-                
-                $is_paid = false;
-                foreach($paid_records as $pr) {
-                    if($pr['month'] == $month_key) {
-                        $is_paid = true;
-                        break;
-                    }
-                }
-                
-                if(!$is_paid) {
-                    $due_months[] = $month_key;
-                    $due_amount += $tenant['monthly_rent'];
-                }
-            }
+        } else {
+            $start = clone $now;
+        }
+    }
+    
+    // Calculate months from start to current
+    $interval = $start->diff($now);
+    $total_months = ($interval->y * 12) + $interval->m;
+    
+    // For each month from start to current month
+    for($i = 0; $i <= $total_months; $i++) {
+        $month_date = clone $start;
+        $month_date->modify("+$i months");
+        $month_key = $month_date->format('Y-m');
+        
+        // Skip if month is after current month
+        if($month_key > $current_month_key) {
+            continue;
+        }
+        
+        // Check if this month has been paid
+        $is_paid = in_array($month_key, $paid_months_list);
+        
+        if(!$is_paid) {
+            $due_months[] = $month_key;
+            $due_amount += $tenant['monthly_rent'];
         }
     }
     

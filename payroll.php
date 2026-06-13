@@ -77,9 +77,9 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['save_attendance'])) {
     }
 }
 
-// Process Payroll - FIXED
+// Process Payroll
 if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['generate_payroll'])) {
-    $month_year = $_POST['month_year']; // Format: YYYY-MM
+    $month_year = $_POST['month_year'];
     $month = date('m', strtotime($month_year . '-01'));
     $year = date('Y', strtotime($month_year . '-01'));
     
@@ -87,7 +87,6 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['generate_payroll'])) {
         $employees = $pdo->query("SELECT * FROM employees WHERE is_active = 1")->fetchAll();
         
         foreach($employees as $emp) {
-            // Calculate attendance for the month
             $stmt = $pdo->prepare("SELECT COUNT(*) as present_days, SUM(overtime_hours) as total_overtime FROM attendance WHERE employee_id = ? AND MONTH(attendance_date) = ? AND YEAR(attendance_date) = ? AND status = 'present'");
             $stmt->execute([$emp['id'], $month, $year]);
             $attendance = $stmt->fetch();
@@ -95,31 +94,20 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['generate_payroll'])) {
             $present_days = $attendance['present_days'] ?? 0;
             $total_overtime = $attendance['total_overtime'] ?? 0;
             
-            // Calculate allowances (40% of basic)
             $allowances = $emp['basic_salary'] * 0.40;
-            
-            // Calculate overtime (1.5x hourly rate)
             $hourly_rate = $emp['basic_salary'] / 30 / 8;
             $overtime_amount = $total_overtime * $hourly_rate * 1.5;
-            
-            // Calculate bonus (5% if present >= 26 days)
             $bonus = ($present_days >= 26) ? $emp['basic_salary'] * 0.05 : 0;
-            
-            // Calculate deductions (10% for loan/advance if any)
             $deductions = $emp['basic_salary'] * 0.10;
-            
             $net_salary = $emp['basic_salary'] + $allowances + $overtime_amount + $bonus - $deductions;
             
-            // Check if payroll already exists for this month
             $stmt = $pdo->prepare("SELECT id FROM payroll WHERE employee_id = ? AND month_year = ?");
             $stmt->execute([$emp['id'], $month_year]);
             
             if($stmt->fetch()) {
-                // Update existing payroll
                 $stmt = $pdo->prepare("UPDATE payroll SET basic_salary = ?, allowances = ?, overtime_amount = ?, bonus = ?, deductions = ?, net_salary = ? WHERE employee_id = ? AND month_year = ?");
                 $stmt->execute([$emp['basic_salary'], $allowances, $overtime_amount, $bonus, $deductions, $net_salary, $emp['id'], $month_year]);
             } else {
-                // Insert new payroll
                 $stmt = $pdo->prepare("INSERT INTO payroll (employee_id, month_year, basic_salary, allowances, overtime_amount, bonus, deductions, net_salary) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
                 $stmt->execute([$emp['id'], $month_year, $emp['basic_salary'], $allowances, $overtime_amount, $bonus, $deductions, $net_salary]);
             }
@@ -154,13 +142,15 @@ while($row = $current_attendance->fetch()) {
 
 $payroll_list = $pdo->query("SELECT p.*, e.full_name, e.designation FROM payroll p JOIN employees e ON p.employee_id = e.id ORDER BY p.month_year DESC, e.full_name")->fetchAll();
 
-// Get employee for editing
 $edit_employee = null;
 if(isset($_GET['edit_id'])) {
     $stmt = $pdo->prepare("SELECT * FROM employees WHERE id = ?");
     $stmt->execute([$_GET['edit_id']]);
     $edit_employee = $stmt->fetch();
 }
+
+$settings = $pdo->query("SELECT setting_key, setting_value FROM system_settings")->fetchAll(PDO::FETCH_KEY_PAIR);
+$currency = $settings['currency_symbol'] ?? 'BDT';
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -183,6 +173,32 @@ if(isset($_GET['edit_id'])) {
             position: sticky;
             top: 20px;
         }
+        .table-responsive {
+            overflow-x: auto;
+        }
+        .text-end {
+            text-align: right;
+        }
+        @media print {
+            .sidebar, .no-print, .stats-card, .btn, .nav-tabs, .card-header .btn, .form-sticky {
+                display: none !important;
+            }
+            .main-content {
+                margin: 0 !important;
+                padding: 10px !important;
+            }
+            .print-header {
+                display: block !important;
+                text-align: center;
+                margin-bottom: 20px;
+            }
+            .table th, .table td {
+                border: 1px solid #000 !important;
+            }
+        }
+        .print-header {
+            display: none;
+        }
     </style>
 </head>
 <body>
@@ -190,11 +206,24 @@ if(isset($_GET['edit_id'])) {
     
     <div class="main-content">
         <div class="container-fluid">
+            <!-- Print Header for Employee List -->
+            <div class="print-header">
+                <h2><?php echo $settings['company_name'] ?? 'FF Enterprise'; ?></h2>
+                <h4>Employee List Report</h4>
+                <p>Generated on: <?php echo date('d/m/Y h:i:s A'); ?></p>
+                <hr>
+            </div>
+            
             <div class="d-flex justify-content-between align-items-center mb-4">
                 <h2><i class="fas fa-users"></i> Payroll Management System</h2>
-                <a href="dashboard.php" class="btn btn-secondary">
-                    <i class="fas fa-arrow-left"></i> Back to Dashboard
-                </a>
+                <div class="no-print">
+                    <button onclick="printEmployeeList()" class="btn btn-info">
+                        <i class="fas fa-print"></i> Print Employee List
+                    </button>
+                    <a href="dashboard.php" class="btn btn-secondary">
+                        <i class="fas fa-arrow-left"></i> Back to Dashboard
+                    </a>
+                </div>
             </div>
             
             <?php if($error): ?>
@@ -205,7 +234,7 @@ if(isset($_GET['edit_id'])) {
             <?php endif; ?>
             
             <!-- Statistics Cards -->
-            <div class="row">
+            <div class="row no-print">
                 <div class="col-md-3">
                     <div class="stats-card">
                         <i class="fas fa-users fa-2x"></i>
@@ -216,7 +245,7 @@ if(isset($_GET['edit_id'])) {
                 <div class="col-md-3">
                     <div class="stats-card" style="background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);">
                         <i class="fas fa-money-bill-wave fa-2x"></i>
-                        <h3>৳ <?php echo number_format(array_sum(array_column($employees, 'basic_salary')), 0); ?></h3>
+                        <h3><?php echo $currency; ?> <?php echo number_format(array_sum(array_column($employees, 'basic_salary')), 0); ?></h3>
                         <p>Monthly Salary Budget</p>
                     </div>
                 </div>
@@ -236,7 +265,7 @@ if(isset($_GET['edit_id'])) {
                 </div>
             </div>
             
-            <ul class="nav nav-tabs">
+            <ul class="nav nav-tabs no-print">
                 <li class="nav-item">
                     <a class="nav-link <?php echo $active_tab == 'employees' ? 'active' : ''; ?>" href="?tab=employees">
                         <i class="fas fa-users"></i> Employees
@@ -262,7 +291,7 @@ if(isset($_GET['edit_id'])) {
             <!-- Employees Tab -->
             <?php if($active_tab == 'employees'): ?>
             <div class="row mt-3">
-                <div class="col-md-4">
+                <div class="col-md-4 no-print">
                     <div class="card form-sticky">
                         <div class="card-header <?php echo $edit_employee ? 'bg-warning' : 'bg-primary'; ?> text-white">
                             <h5>
@@ -307,7 +336,7 @@ if(isset($_GET['edit_id'])) {
                                            value="<?php echo $edit_employee['joining_date'] ?? ''; ?>" required>
                                 </div>
                                 <div class="mb-3">
-                                    <label>Basic Salary (BDT)</label>
+                                    <label>Basic Salary (<?php echo $currency; ?>)</label>
                                     <input type="number" name="basic_salary" class="form-control" step="0.01" 
                                            value="<?php echo $edit_employee['basic_salary'] ?? ''; ?>" required>
                                 </div>
@@ -340,21 +369,24 @@ if(isset($_GET['edit_id'])) {
                 
                 <div class="col-md-8">
                     <div class="card">
-                        <div class="card-header bg-info text-white">
+                        <div class="card-header bg-info text-white d-flex justify-content-between align-items-center">
                             <h5><i class="fas fa-list"></i> Employee List</h5>
+                            <button onclick="printEmployeeList()" class="btn btn-light btn-sm">
+                                <i class="fas fa-print"></i> Print List
+                            </button>
                         </div>
                         <div class="card-body">
                             <div class="table-responsive">
                                 <table class="table table-bordered" id="employeesTable">
-                                    <thead>
+                                    <thead class="table-dark">
                                         <tr>
                                             <th>ID</th>
                                             <th>Name</th>
                                             <th>Designation</th>
                                             <th>Department</th>
-                                            <th>Basic Salary</th>
+                                            <th class="text-end">Basic Salary</th>
                                             <th>Phone</th>
-                                            <th>Actions</th>
+                                            <th class="no-print">Actions</th>
                                         </tr>
                                     </thead>
                                     <tbody>
@@ -364,9 +396,9 @@ if(isset($_GET['edit_id'])) {
                                             <td><strong><?php echo $emp['full_name']; ?></strong></td>
                                             <td><?php echo $emp['designation']; ?></td>
                                             <td><?php echo $emp['department']; ?></td>
-                                            <td>BDT <?php echo number_format($emp['basic_salary'], 2); ?></td>
+                                            <td class="text-end"><?php echo $currency; ?> <?php echo number_format($emp['basic_salary'], 2); ?></td>
                                             <td><?php echo $emp['phone']; ?></td>
-                                            <td>
+                                            <td class="no-print">
                                                 <a href="?tab=employees&edit_id=<?php echo $emp['id']; ?>" class="btn btn-sm btn-warning">
                                                     <i class="fas fa-edit"></i> Edit
                                                 </a>
@@ -374,10 +406,17 @@ if(isset($_GET['edit_id'])) {
                                                    onclick="return confirm('Delete this employee?')">
                                                     <i class="fas fa-trash"></i> Delete
                                                 </a>
-                                              </td>
-                                           </tr>
+                                            </td>
+                                        </tr>
                                         <?php endforeach; ?>
                                     </tbody>
+                                    <tfoot class="table-light">
+                                        <tr class="fw-bold">
+                                            <td colspan="4" class="text-end">TOTAL:</td>
+                                            <td class="text-end"><?php echo $currency; ?> <?php echo number_format(array_sum(array_column($employees, 'basic_salary')), 2); ?></td>
+                                            <td colspan="2"></td>
+                                        </tr>
+                                    </tfoot>
                                 </table>
                             </div>
                         </div>
@@ -418,31 +457,25 @@ if(isset($_GET['edit_id'])) {
                                             <th>Check Out</th>
                                             <th>Status</th>
                                             <th>Overtime (Hours)</th>
-                                         </tr>
+                                        </tr>
                                     </thead>
                                     <tbody>
                                         <?php foreach($employees as $emp): ?>
                                         <?php $att = $attendance_map[$emp['id']] ?? null; ?>
-                                         <tr>
-                                             <td><strong><?php echo $emp['full_name']; ?></strong><br><small><?php echo $emp['designation']; ?></small></td>
-                                             <td>
-                                                <input type="time" name="attendance[<?php echo $emp['id']; ?>][check_in]" class="form-control" value="<?php echo $att['check_in_time'] ?? '09:00'; ?>">
-                                             </td>
-                                             <td>
-                                                <input type="time" name="attendance[<?php echo $emp['id']; ?>][check_out]" class="form-control" value="<?php echo $att['check_out_time'] ?? '17:00'; ?>">
-                                             </td>
-                                             <td>
+                                        <tr>
+                                            <td><strong><?php echo $emp['full_name']; ?></strong><br><small><?php echo $emp['designation']; ?></small></td>
+                                            <td><input type="time" name="attendance[<?php echo $emp['id']; ?>][check_in]" class="form-control" value="<?php echo $att['check_in_time'] ?? '09:00'; ?>"></td>
+                                            <td><input type="time" name="attendance[<?php echo $emp['id']; ?>][check_out]" class="form-control" value="<?php echo $att['check_out_time'] ?? '17:00'; ?>"></td>
+                                            <td>
                                                 <select name="attendance[<?php echo $emp['id']; ?>][status]" class="form-control">
                                                     <option value="present" <?php echo ($att['status'] ?? '') == 'present' ? 'selected' : ''; ?>>Present</option>
                                                     <option value="absent" <?php echo ($att['status'] ?? '') == 'absent' ? 'selected' : ''; ?>>Absent</option>
                                                     <option value="late" <?php echo ($att['status'] ?? '') == 'late' ? 'selected' : ''; ?>>Late</option>
                                                     <option value="half_day" <?php echo ($att['status'] ?? '') == 'half_day' ? 'selected' : ''; ?>>Half Day</option>
                                                 </select>
-                                             </td>
-                                             <td>
-                                                <input type="number" name="attendance[<?php echo $emp['id']; ?>][overtime]" class="form-control" step="0.5" value="<?php echo $att['overtime_hours'] ?? 0; ?>">
-                                             </td>
-                                          </tr>
+                                            </td>
+                                            <td><input type="number" name="attendance[<?php echo $emp['id']; ?>][overtime]" class="form-control" step="0.5" value="<?php echo $att['overtime_hours'] ?? 0; ?>"></td>
+                                        </tr>
                                         <?php endforeach; ?>
                                     </tbody>
                                 </table>
@@ -487,44 +520,49 @@ if(isset($_GET['edit_id'])) {
                                     <tr>
                                         <th>Month</th>
                                         <th>Employee</th>
-                                        <th>Basic</th>
-                                        <th>Allowances</th>
-                                        <th>Overtime</th>
-                                        <th>Bonus</th>
-                                        <th>Deductions</th>
-                                        <th>Net Salary</th>
+                                        <th class="text-end">Basic</th>
+                                        <th class="text-end">Allowances</th>
+                                        <th class="text-end">Overtime</th>
+                                        <th class="text-end">Bonus</th>
+                                        <th class="text-end">Deductions</th>
+                                        <th class="text-end">Net Salary</th>
                                         <th>Status</th>
-                                        <th>Action</th>
-                                     </tr>
+                                        <th class="no-print">Action</th>
+                                    </tr>
                                 </thead>
                                 <tbody>
-                                    <?php foreach($payroll_list as $pay): ?>
-                                     <tr>
-                                         <td><?php echo date('F Y', strtotime($pay['month_year'] . '-01')); ?></td>
-                                         <td><strong><?php echo $pay['full_name']; ?></strong><br><small><?php echo $pay['designation']; ?></small></td>
-                                         <td>BDT <?php echo number_format($pay['basic_salary'], 2); ?></td>
-                                         <td>BDT <?php echo number_format($pay['allowances'], 2); ?></td>
-                                         <td>BDT <?php echo number_format($pay['overtime_amount'], 2); ?></td>
-                                         <td>BDT <?php echo number_format($pay['bonus'], 2); ?></td>
-                                         <td>BDT <?php echo number_format($pay['deductions'], 2); ?></td>
-                                         <td><strong>BDT <?php echo number_format($pay['net_salary'], 2); ?></strong></td>
-                                         <td>
-                                            <span class="badge bg-<?php echo $pay['status'] == 'paid' ? 'success' : 'warning'; ?>">
-                                                <?php echo ucfirst($pay['status']); ?>
-                                            </span>
-                                         </td>
-                                         <td>
-                                            <a href="view_payslip.php?id=<?php echo $pay['id']; ?>" class="btn btn-sm btn-info">View</a>
-                                            <?php if($pay['status'] == 'pending'): ?>
-                                                <a href="?mark_paid=<?php echo $pay['id']; ?>&tab=payroll" class="btn btn-sm btn-success">Mark Paid</a>
-                                            <?php endif; ?>
-                                         </td>
-                                      </tr>
-                                    <?php endforeach; ?>
                                     <?php if(empty($payroll_list)): ?>
-                                     <tr>
-                                         <td colspan="10" class="text-center">No payroll records found. Generate payroll for a month.</td>
-                                      </tr>
+                                    <tr>
+                                        <td colspan="10" class="text-center">No payroll records found. Generate payroll for a month.</td>
+                                    </tr>
+                                    <?php else: ?>
+                                        <?php foreach($payroll_list as $pay): ?>
+                                        <tr>
+                                            <td><?php echo date('F Y', strtotime($pay['month_year'] . '-01')); ?></td>
+                                            <td><strong><?php echo $pay['full_name']; ?></strong><br><small><?php echo $pay['designation']; ?></small></td>
+                                            <td class="text-end"><?php echo $currency; ?> <?php echo number_format($pay['basic_salary'], 2); ?></td>
+                                            <td class="text-end"><?php echo $currency; ?> <?php echo number_format($pay['allowances'], 2); ?></td>
+                                            <td class="text-end"><?php echo $currency; ?> <?php echo number_format($pay['overtime_amount'], 2); ?></td>
+                                            <td class="text-end"><?php echo $currency; ?> <?php echo number_format($pay['bonus'], 2); ?></td>
+                                            <td class="text-end"><?php echo $currency; ?> <?php echo number_format($pay['deductions'], 2); ?></td>
+                                            <td class="text-end"><strong><?php echo $currency; ?> <?php echo number_format($pay['net_salary'], 2); ?></strong></td>
+                                            <td>
+                                                <span class="badge bg-<?php echo $pay['status'] == 'paid' ? 'success' : 'warning'; ?>">
+                                                    <?php echo ucfirst($pay['status']); ?>
+                                                </span>
+                                            </td>
+                                            <td class="no-print">
+                                                <a href="view_payslip.php?id=<?php echo $pay['id']; ?>" class="btn btn-sm btn-info" target="_blank">
+                                                    <i class="fas fa-eye"></i> View
+                                                </a>
+                                                <?php if($pay['status'] == 'pending'): ?>
+                                                    <a href="?mark_paid=<?php echo $pay['id']; ?>&tab=payroll" class="btn btn-sm btn-success">
+                                                        <i class="fas fa-check"></i> Mark Paid
+                                                    </a>
+                                                <?php endif; ?>
+                                            </td>
+                                        </tr>
+                                        <?php endforeach; ?>
                                     <?php endif; ?>
                                 </tbody>
                             </table>
@@ -570,9 +608,18 @@ if(isset($_GET['edit_id'])) {
         $(document).ready(function() {
             $('#employeesTable, #payrollTable').DataTable({
                 order: [[0, 'asc']],
-                pageLength: 25
+                pageLength: 25,
+                language: {
+                    search: "Search:",
+                    lengthMenu: "Show _MENU_ entries",
+                    info: "Showing _START_ to _END_ of _TOTAL_ entries"
+                }
             });
         });
+        
+        function printEmployeeList() {
+            window.print();
+        }
     </script>
 </body>
 </html>

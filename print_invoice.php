@@ -23,6 +23,7 @@ if(isset($invoice['product_id']) && $invoice['product_id']) {
 
 // Get company settings
 $settings = $pdo->query("SELECT setting_key, setting_value FROM system_settings")->fetchAll(PDO::FETCH_KEY_PAIR);
+$currency = $settings['currency_symbol'] ?? 'BDT';
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -127,7 +128,7 @@ $settings = $pdo->query("SELECT setting_key, setting_value FROM system_settings"
         
         .grand-total {
             font-weight: bold;
-            font-size: 12px;
+            font-size: 14px;
             margin-top: 5px;
             padding-top: 5px;
             border-top: 1px solid #000;
@@ -190,7 +191,7 @@ $settings = $pdo->query("SELECT setting_key, setting_value FROM system_settings"
         
         <div class="info-section">
             <div class="info-row">
-                <span>Invoice:</span>
+                <span>Invoice No:</span>
                 <span><strong><?php echo $invoice['invoice_no']; ?></strong></span>
             </div>
             <div class="info-row">
@@ -201,44 +202,36 @@ $settings = $pdo->query("SELECT setting_key, setting_value FROM system_settings"
                 <span>Customer:</span>
                 <span><?php echo $invoice['customer_name'] ?: 'Walk-in Customer'; ?></span>
             </div>
+            <div class="info-row">
+                <span>Operator:</span>
+                <span><?php echo $_SESSION['user_name'] ?? 'Cashier'; ?></span>
+            </div>
         </div>
         
         <table>
             <thead>
                 <tr>
                     <th>Item</th>
-                    <th class="text-right">Qty</th>
-                    <th class="text-right">Price</th>
-                    <th class="text-right">Amt</th>
+                    <th class="text-right">Qty (L)</th>
+                    <th class="text-right">Price (<?php echo $currency; ?>)</th>
+                    <th class="text-right">Amount (<?php echo $currency; ?>)</th>
                 </tr>
             </thead>
             <tbody>
                 <tr>
                     <td><?php echo $product_name; ?></td>
-                    <td class="text-right"><?php echo number_format($invoice['quantity'], 2); ?>L</td>
+                    <td class="text-right"><?php echo number_format($invoice['quantity'], 2); ?></td>
                     <td class="text-right"><?php echo number_format($invoice['unit_price'], 2); ?></td>
-                    <td class="text-right"><?php echo number_format($invoice['subtotal'], 2); ?></td>
+                    <td class="text-right"><?php echo number_format($invoice['total'], 2); ?></td>
                 </tr>
             </tbody>
         </table>
         
         <div class="total-section">
-            <div class="total-row">
-                <span>Subtotal:</span>
-                <span><?php echo number_format($invoice['subtotal'], 2); ?></span>
-            </div>
-            <div class="total-row">
-                <span>VAT (5%):</span>
-                <span><?php echo number_format($invoice['vat'], 2); ?></span>
-            </div>
-            <div class="total-row">
-                <span>Tax (2%):</span>
-                <span><?php echo number_format($invoice['tax'], 2); ?></span>
-            </div>
             <div class="grand-total">
                 <div class="total-row">
-                    <span><strong>TOTAL:</strong></span>
-                    <span><strong>BDT <?php echo number_format($invoice['total'], 2); ?></strong></span>
+                    <span><strong>TOTAL AMOUNT:</strong></span>
+                    <span><strong><?php echo $currency; ?> <?php echo number_format($invoice['total'], 2); ?></strong></span>
                 </div>
             </div>
         </div>
@@ -246,20 +239,21 @@ $settings = $pdo->query("SELECT setting_key, setting_value FROM system_settings"
         <?php if(isset($invoice['received']) && $invoice['received'] > 0): ?>
         <div style="margin-top: 5px;">
             <div class="total-row">
-                <span>Received:</span>
-                <span>BDT <?php echo number_format($invoice['received'], 2); ?></span>
+                <span>Cash Received:</span>
+                <span><?php echo $currency; ?> <?php echo number_format($invoice['received'], 2); ?></span>
             </div>
             <div class="total-row">
-                <span>Change:</span>
-                <span>BDT <?php echo number_format($invoice['change'], 2); ?></span>
+                <span>Change Return:</span>
+                <span><?php echo $currency; ?> <?php echo number_format($invoice['change'], 2); ?></span>
             </div>
         </div>
         <?php endif; ?>
         
         <div class="footer">
             <div class="thankyou">*** THANK YOU ***</div>
-            <div>Fuel not returnable</div>
-            <div><?php echo $invoice['invoice_no']; ?></div>
+            <div>Fuel once sold is not returnable</div>
+            <div>This is a computer generated invoice</div>
+            <div style="margin-top: 5px;"><?php echo $invoice['invoice_no']; ?></div>
             <div><?php echo date('d/m/Y H:i:s'); ?></div>
         </div>
     </div>
@@ -267,12 +261,17 @@ $settings = $pdo->query("SELECT setting_key, setting_value FROM system_settings"
     <script>
         function printInvoice() {
             // Hide buttons
-            document.querySelector('.no-print').style.display = 'none';
+            var buttons = document.querySelector('.no-print');
+            if (buttons) {
+                buttons.style.display = 'none';
+            }
             // Print
             window.print();
             // Show buttons after print (for possible reprint)
             setTimeout(function() {
-                document.querySelector('.no-print').style.display = 'block';
+                if (buttons) {
+                    buttons.style.display = 'block';
+                }
             }, 1000);
         }
         
@@ -282,15 +281,13 @@ $settings = $pdo->query("SELECT setting_key, setting_value FROM system_settings"
         
         // Auto print on load
         window.onload = function() {
-            // Small delay to ensure everything is rendered
             setTimeout(function() {
                 printInvoice();
-            }, 300);
+            }, 500);
         };
         
         // Auto close after printing
         window.onafterprint = function() {
-            // Close after 2 seconds
             setTimeout(function() {
                 window.close();
             }, 1500);
