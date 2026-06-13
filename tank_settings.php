@@ -68,6 +68,29 @@ $tanks = $pdo->query("
 ")->fetchAll();
 
 $products = $pdo->query("SELECT * FROM fuel_products WHERE is_active = 1")->fetchAll();
+
+// Calculate statistics
+$total_tanks = count($tanks);
+$total_stock = array_sum(array_column($tanks, 'current_stock_liters'));
+$total_capacity = array_sum(array_column($tanks, 'capacity_liters'));
+$fill_percent = $total_capacity > 0 ? ($total_stock / $total_capacity) * 100 : 0;
+
+// Calculate total inventory value
+$total_value = 0;
+foreach($tanks as $t) {
+    $total_value += $t['current_stock_liters'] * $t['purchase_rate'];
+}
+
+// Low stock count (less than 500L)
+$low_stock_count = 0;
+foreach($tanks as $t) {
+    if($t['current_stock_liters'] < 500) {
+        $low_stock_count++;
+    }
+}
+
+$settings = $pdo->query("SELECT setting_key, setting_value FROM system_settings")->fetchAll(PDO::FETCH_KEY_PAIR);
+$currency = $settings['currency_symbol'] ?? 'BDT';
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -78,6 +101,47 @@ $products = $pdo->query("SELECT * FROM fuel_products WHERE is_active = 1")->fetc
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <link rel="stylesheet" href="https://cdn.datatables.net/1.11.5/css/dataTables.bootstrap5.min.css">
+    <style>
+        .stats-card {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border-radius: 15px;
+            padding: 20px;
+            margin-bottom: 20px;
+            transition: transform 0.3s;
+        }
+        .stats-card:hover {
+            transform: translateY(-5px);
+        }
+        .stats-card i {
+            font-size: 40px;
+            opacity: 0.5;
+            float: right;
+        }
+        .stats-card h3 {
+            font-size: 28px;
+            margin-bottom: 5px;
+        }
+        .stats-card p {
+            margin: 0;
+            opacity: 0.8;
+        }
+        .progress-bar {
+            transition: width 0.5s ease;
+        }
+        .table-responsive {
+            overflow-x: auto;
+        }
+        .text-end {
+            text-align: right;
+        }
+        .btn-action {
+            margin: 2px;
+        }
+        .low-stock-row {
+            background-color: #f8d7da !important;
+        }
+    </style>
 </head>
 <body>
     <?php include 'left_menu.php'; ?>
@@ -92,112 +156,126 @@ $products = $pdo->query("SELECT * FROM fuel_products WHERE is_active = 1")->fetc
             </div>
             
             <?php if($error): ?>
-                <div class="alert alert-danger"><?php echo $error; ?></div>
+                <div class="alert alert-danger alert-dismissible fade show">
+                    <i class="fas fa-exclamation-circle"></i> <?php echo $error; ?>
+                    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                </div>
             <?php endif; ?>
             <?php if($success): ?>
-                <div class="alert alert-success"><?php echo $success; ?></div>
+                <div class="alert alert-success alert-dismissible fade show">
+                    <i class="fas fa-check-circle"></i> <?php echo $success; ?>
+                    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                </div>
             <?php endif; ?>
             
             <!-- Statistics Cards -->
             <div class="row mb-4">
                 <div class="col-md-3">
-                    <div class="card text-white bg-primary">
-                        <div class="card-body">
-                            <h5>Total Tanks</h5>
-                            <h2><?php echo count($tanks); ?></h2>
-                        </div>
+                    <div class="stats-card">
+                        <i class="fas fa-oil-can"></i>
+                        <h3><?php echo $total_tanks; ?></h3>
+                        <p>Total Tanks</p>
                     </div>
                 </div>
                 <div class="col-md-3">
-                    <div class="card text-white bg-success">
-                        <div class="card-body">
-                            <h5>Total Stock</h5>
-                            <h2><?php echo number_format(array_sum(array_column($tanks, 'current_stock_liters')), 0); ?> L</h2>
-                        </div>
+                    <div class="stats-card" style="background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);">
+                        <i class="fas fa-chart-line"></i>
+                        <h3><?php echo number_format($total_stock, 2); ?> L</h3>
+                        <p>Total Stock</p>
                     </div>
                 </div>
                 <div class="col-md-3">
-                    <div class="card text-white bg-info">
-                        <div class="card-body">
-                            <h5>Total Capacity</h5>
-                            <h2><?php echo number_format(array_sum(array_column($tanks, 'capacity_liters')), 0); ?> L</h2>
-                        </div>
+                    <div class="stats-card" style="background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);">
+                        <i class="fas fa-money-bill-wave"></i>
+                        <h3><?php echo $currency; ?> <?php echo number_format($total_value, 2); ?></h3>
+                        <p>Inventory Value</p>
                     </div>
                 </div>
                 <div class="col-md-3">
-                    <div class="card text-white bg-warning">
-                        <div class="card-body">
-                            <h5>Fill Percentage</h5>
-                            <h2><?php 
-                                $total_stock = array_sum(array_column($tanks, 'current_stock_liters'));
-                                $total_capacity = array_sum(array_column($tanks, 'capacity_liters'));
-                                $fill_percent = $total_capacity > 0 ? ($total_stock / $total_capacity) * 100 : 0;
-                                echo round($fill_percent, 1); ?>%
-                            </h2>
-                        </div>
+                    <div class="stats-card" style="background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);">
+                        <i class="fas fa-exclamation-triangle"></i>
+                        <h3><?php echo $low_stock_count; ?></h3>
+                        <p>Low Stock Alerts</p>
                     </div>
                 </div>
             </div>
             
             <!-- Tanks List -->
             <div class="card">
-                <div class="card-header bg-primary text-white">
+                <div class="card-header bg-primary text-white d-flex justify-content-between align-items-center">
                     <h5><i class="fas fa-list"></i> Tank List</h5>
+                    <button onclick="window.print()" class="btn btn-light btn-sm">
+                        <i class="fas fa-print"></i> Print List
+                    </button>
                 </div>
                 <div class="card-body">
                     <div class="table-responsive">
                         <table class="table table-bordered table-hover" id="tanksTable">
-                            <thead>
+                            <thead class="table-dark">
                                 <tr>
                                     <th>SL</th>
                                     <th>Tank Name</th>
                                     <th>Product</th>
-                                    <th>Capacity (L)</th>
-                                    <th>Current Stock (L)</th>
+                                    <th class="text-end">Capacity (L)</th>
+                                    <th class="text-end">Current Stock (L)</th>
                                     <th>Fill %</th>
+                                    <th class="text-end">Stock Value</th>
                                     <th>Status</th>
                                     <th>Actions</th>
                                 </tr>
                             </thead>
                             <tbody>
                                 <?php $sl=1; foreach($tanks as $t): 
-                                    $fill_percent = ($t['current_stock_liters'] / $t['capacity_liters']) * 100;
+                                    $fill_percent = ($t['capacity_liters'] > 0) ? ($t['current_stock_liters'] / $t['capacity_liters']) * 100 : 0;
                                     $bar_color = $fill_percent < 20 ? 'bg-danger' : ($fill_percent > 80 ? 'bg-success' : 'bg-warning');
+                                    $stock_value = $t['current_stock_liters'] * $t['purchase_rate'];
+                                    $row_class = ($t['current_stock_liters'] < 500) ? 'low-stock-row' : '';
                                 ?>
-                                <tr>
-                                    <td><?php echo $sl++; ?></td>
-                                    <td><strong><?php echo $t['tank_name']; ?></strong></td>
-                                    <td><?php echo $t['product_name']; ?></td>
-                                    <td><?php echo number_format($t['capacity_liters'], 0); ?></td>
-                                    <td><?php echo number_format($t['current_stock_liters'], 2); ?></td>
+                                <tr class="<?php echo $row_class; ?>">
+                                    <td class="text-center"><?php echo $sl++; ?></td>
+                                    <td><strong><?php echo htmlspecialchars($t['tank_name']); ?></strong></td>
+                                    <td><?php echo htmlspecialchars($t['product_name']); ?></td>
+                                    <td class="text-end"><?php echo number_format($t['capacity_liters'], 0); ?> L</td>
+                                    <td class="text-end"><?php echo number_format($t['current_stock_liters'], 2); ?> L</td>
                                     <td>
                                         <div class="progress" style="height: 20px;">
-                                            <div class="progress-bar <?php echo $bar_color; ?>" style="width: <?php echo $fill_percent; ?>%">
+                                            <div class="progress-bar <?php echo $bar_color; ?>" style="width: <?php echo min($fill_percent, 100); ?>%">
                                                 <?php echo round($fill_percent, 1); ?>%
                                             </div>
                                         </div>
                                     </td>
-                                    <td>
+                                    <td class="text-end"><?php echo $currency; ?> <?php echo number_format($stock_value, 2); ?></td>
+                                    <td class="text-center">
                                         <?php if($t['is_active']): ?>
                                             <span class="badge bg-success">Active</span>
                                         <?php else: ?>
                                             <span class="badge bg-danger">Inactive</span>
                                         <?php endif; ?>
                                     </td>
-                                    <td>
-                                        <button class="btn btn-sm btn-info" onclick="updateStock(<?php echo $t['id']; ?>, '<?php echo $t['tank_name']; ?>', <?php echo $t['current_stock_liters']; ?>)">
+                                    <td class="text-center">
+                                        <button class="btn btn-sm btn-info btn-action" onclick="updateStock(<?php echo $t['id']; ?>, '<?php echo addslashes($t['tank_name']); ?>', <?php echo $t['current_stock_liters']; ?>)">
                                             <i class="fas fa-edit"></i> Stock
                                         </button>
-                                        <button class="btn btn-sm btn-warning" onclick="editTank(<?php echo $t['id']; ?>, '<?php echo $t['tank_name']; ?>', <?php echo $t['product_id']; ?>, <?php echo $t['capacity_liters']; ?>, <?php echo $t['calibration_factor']; ?>)">
+                                        <button class="btn btn-sm btn-warning btn-action" onclick="editTank(<?php echo $t['id']; ?>, '<?php echo addslashes($t['tank_name']); ?>', <?php echo $t['product_id']; ?>, <?php echo $t['capacity_liters']; ?>, <?php echo $t['calibration_factor']; ?>)">
                                             <i class="fas fa-pen"></i> Edit
                                         </button>
-                                        <a href="?delete_id=<?php echo $t['id']; ?>" class="btn btn-sm btn-danger" onclick="return confirm('Delete this tank?')">
+                                        <a href="?delete_id=<?php echo $t['id']; ?>" class="btn btn-sm btn-danger btn-action" onclick="return confirm('Delete this tank?')">
                                             <i class="fas fa-trash"></i> Delete
                                         </a>
                                     </td>
                                 </tr>
                                 <?php endforeach; ?>
                             </tbody>
+                            <tfoot class="table-light">
+                                <tr class="fw-bold">
+                                    <td colspan="3" class="text-end">TOTAL:</td>
+                                    <td class="text-end"><?php echo number_format($total_capacity, 0); ?> L</td>
+                                    <td class="text-end"><?php echo number_format($total_stock, 2); ?> L</td>
+                                    <td></td>
+                                    <td class="text-end"><?php echo $currency; ?> <?php echo number_format($total_value, 2); ?></td>
+                                    <td colspan="2"></td>
+                                </tr>
+                            </tfoot>
                         </table>
                     </div>
                 </div>
@@ -329,7 +407,12 @@ $products = $pdo->query("SELECT * FROM fuel_products WHERE is_active = 1")->fetc
         $(document).ready(function() {
             $('#tanksTable').DataTable({
                 order: [[0, 'asc']],
-                pageLength: 25
+                pageLength: 25,
+                language: {
+                    search: "Search:",
+                    lengthMenu: "Show _MENU_ entries",
+                    info: "Showing _START_ to _END_ of _TOTAL_ entries"
+                }
             });
         });
         

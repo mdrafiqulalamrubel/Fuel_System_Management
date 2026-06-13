@@ -48,7 +48,7 @@ if(isset($_GET['delete_id'])) {
     }
 }
 
-// Process Voucher - FIXED with proper account validation
+// Process Voucher
 if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['save_voucher'])) {
     $voucher_type = $_POST['voucher_type'];
     $date = $_POST['date'];
@@ -60,7 +60,6 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['save_voucher'])) {
     try {
         $pdo->beginTransaction();
         
-        // Validate all accounts exist before inserting
         foreach($accounts as $acc_id) {
             if(!empty($acc_id)) {
                 $stmt = $pdo->prepare("SELECT id FROM chart_of_accounts WHERE id = ? AND is_active = 1");
@@ -95,7 +94,6 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['save_voucher'])) {
 $accounts = $pdo->query("SELECT * FROM chart_of_accounts WHERE is_active = 1 ORDER BY account_code")->fetchAll();
 $vouchers = $pdo->query("SELECT v.*, u.full_name as creator FROM vouchers v JOIN users u ON v.created_by = u.id ORDER BY v.created_at DESC LIMIT 50")->fetchAll();
 
-// Get account for editing
 $edit_account = null;
 if(isset($_GET['edit_id'])) {
     $stmt = $pdo->prepare("SELECT * FROM chart_of_accounts WHERE id = ?");
@@ -103,10 +101,8 @@ if(isset($_GET['edit_id'])) {
     $edit_account = $stmt->fetch();
 }
 
-// Get company settings
 $settings = $pdo->query("SELECT setting_key, setting_value FROM system_settings")->fetchAll(PDO::FETCH_KEY_PAIR);
 
-// Calculate current balances
 $account_balances = [];
 foreach($accounts as $acc) {
     $stmt = $pdo->prepare("SELECT SUM(debit_amount) as total_debit, SUM(credit_amount) as total_credit FROM voucher_items vi JOIN vouchers v ON vi.voucher_id = v.id WHERE vi.account_id = ? AND v.status = 'approved'");
@@ -138,6 +134,71 @@ foreach($accounts as $acc) {
         .balance-positive { color: green; }
         .balance-negative { color: red; }
         .form-card { position: sticky; top: 20px; }
+        
+        /* Tab Styles */
+        .nav-tabs {
+            border-bottom: 2px solid #e0e0e0;
+            margin-bottom: 20px;
+        }
+        
+        .nav-tabs .nav-item {
+            margin-bottom: -2px;
+        }
+        
+        .nav-tabs .nav-link {
+            color: #6c757d;
+            font-weight: 500;
+            padding: 12px 20px;
+            border: none;
+            border-bottom: 2px solid transparent;
+            transition: all 0.3s ease;
+        }
+        
+        .nav-tabs .nav-link:hover {
+            color: #667eea;
+            border-bottom-color: #667eea;
+            background: transparent;
+        }
+        
+        .nav-tabs .nav-link.active {
+            color: #667eea;
+            background: transparent;
+            border-bottom: 2px solid #667eea;
+            font-weight: 600;
+        }
+        
+        .nav-tabs .nav-link i {
+            margin-right: 8px;
+        }
+        
+        /* Report Card Styles */
+        .report-card {
+            background: white;
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.05);
+            transition: transform 0.3s;
+            text-align: center;
+            cursor: pointer;
+        }
+        .report-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 5px 20px rgba(0,0,0,0.1);
+        }
+        .report-icon {
+            font-size: 48px;
+            margin-bottom: 15px;
+        }
+        .report-title {
+            font-size: 18px;
+            font-weight: 600;
+            margin-bottom: 5px;
+        }
+        .report-desc {
+            font-size: 12px;
+            color: #666;
+        }
         
         @media print {
             .sidebar, .main-content .container-fluid .d-flex, .nav-tabs, .btn, .alert,
@@ -178,6 +239,7 @@ foreach($accounts as $acc) {
                 </div>
             <?php endif; ?>
             
+            <!-- Tabs -->
             <ul class="nav nav-tabs">
                 <li class="nav-item">
                     <a class="nav-link <?php echo $active_tab == 'chart' ? 'active' : ''; ?>" href="?tab=chart">
@@ -527,7 +589,7 @@ foreach($accounts as $acc) {
                                       </tr>
                                     <?php endforeach; ?>
                                 </tbody>
-                             </table>
+                             <table>
                         </div>
                     </div>
                 </div>
@@ -537,75 +599,234 @@ foreach($accounts as $acc) {
             <!-- Reports Tab -->
             <?php if($active_tab == 'reports'): ?>
             <div class="row mt-3">
+                <!-- Row 1: Financial Reports -->
+                <div class="col-md-12">
+                    <h4 class="mb-3"><i class="fas fa-chart-line"></i> Financial Reports</h4>
+                </div>
+                
                 <div class="col-md-4">
-                    <div class="card">
-                        <div class="card-header bg-primary text-white">
-                            <h5><i class="fas fa-balance-scale"></i> Trial Balance</h5>
+                    <div class="report-card" onclick="window.open('balance_sheet.php', '_blank')">
+                        <div class="report-icon">
+                            <i class="fas fa-balance-scale text-primary"></i>
                         </div>
-                        <div class="card-body">
-                            <form target="_blank" action="trial_balance.php" method="GET">
-                                <div class="mb-3">
-                                    <label>As on Date</label>
-                                    <input type="date" name="as_on" class="form-control" value="<?php echo date('Y-m-d'); ?>" required>
-                                </div>
-                                <button type="submit" class="btn btn-primary w-100">Generate Trial Balance</button>
-                            </form>
-                        </div>
+                        <div class="report-title">Balance Sheet</div>
+                        <div class="report-desc">Statement of assets, liabilities and equity</div>
                     </div>
                 </div>
                 
                 <div class="col-md-4">
-                    <div class="card">
-                        <div class="card-header bg-success text-white">
-                            <h5><i class="fas fa-scroll"></i> General Ledger</h5>
+                    <div class="report-card" onclick="window.open('profit_loss.php', '_blank')">
+                        <div class="report-icon">
+                            <i class="fas fa-chart-line text-success"></i>
                         </div>
-                        <div class="card-body">
-                            <form target="_blank" action="general_ledger.php" method="GET">
-                                <div class="mb-3">
-                                    <label>Select Account</label>
-                                    <select name="account_id" class="form-control" required>
-                                        <option value="">Select Account</option>
-                                        <?php foreach($accounts as $acc): ?>
-                                            <option value="<?php echo $acc['id']; ?>"><?php echo $acc['account_code']; ?> - <?php echo $acc['account_name']; ?></option>
-                                        <?php endforeach; ?>
-                                    </select>
-                                </div>
-                                <div class="row">
-                                    <div class="col-md-6">
-                                        <label>From Date</label>
-                                        <input type="date" name="from_date" class="form-control" required>
-                                    </div>
-                                    <div class="col-md-6">
-                                        <label>To Date</label>
-                                        <input type="date" name="to_date" class="form-control" required>
-                                    </div>
-                                </div>
-                                <button type="submit" class="btn btn-success w-100 mt-2">Generate Ledger</button>
-                            </form>
-                        </div>
+                        <div class="report-title">Profit & Loss</div>
+                        <div class="report-desc">Income and expense statement</div>
                     </div>
                 </div>
                 
                 <div class="col-md-4">
-                    <div class="card">
-                        <div class="card-header bg-warning text-white">
-                            <h5><i class="fas fa-money-bill"></i> Cash/Bank Book</h5>
+                    <div class="report-card" onclick="window.open('trial_balance.php', '_blank')">
+                        <div class="report-icon">
+                            <i class="fas fa-list-ul text-info"></i>
                         </div>
-                        <div class="card-body">
-                            <form target="_blank" action="cash_book.php" method="GET">
-                                <div class="mb-3">
-                                    <label>Book Type</label>
-                                    <select name="book_type" class="form-control" required>
-                                        <option value="cash">Cash Book</option>
-                                        <option value="bank">Bank Book</option>
-                                    </select>
+                        <div class="report-title">Trial Balance</div>
+                        <div class="report-desc">Summary of all ledger balances</div>
+                    </div>
+                </div>
+                
+                <!-- Row 2: Ledger Reports -->
+                <div class="col-md-12 mt-4">
+                    <h4 class="mb-3"><i class="fas fa-book"></i> Ledger Reports</h4>
+                </div>
+                
+                <div class="col-md-4">
+                    <div class="report-card" onclick="window.open('general_ledger.php', '_blank')">
+                        <div class="report-icon">
+                            <i class="fas fa-scroll text-warning"></i>
+                        </div>
+                        <div class="report-title">General Ledger</div>
+                        <div class="report-desc">Account-wise transaction details</div>
+                    </div>
+                </div>
+                
+                <div class="col-md-4">
+                    <div class="report-card" onclick="window.open('cash_flow.php', '_blank')">
+                        <div class="report-icon">
+                            <i class="fas fa-money-bill-wave text-danger"></i>
+                        </div>
+                        <div class="report-title">Cash Flow Statement</div>
+                        <div class="report-desc">Cash inflow and outflow statement</div>
+                    </div>
+                </div>
+                
+                <div class="col-md-4">
+                    <div class="report-card" onclick="window.open('accounting.php?tab=chart', '_blank')">
+                        <div class="report-icon">
+                            <i class="fas fa-list text-secondary"></i>
+                        </div>
+                        <div class="report-title">Chart of Accounts</div>
+                        <div class="report-desc">Complete account list with balances</div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Quick Report Generation Section -->
+            <div class="card mt-4">
+                <div class="card-header bg-primary text-white">
+                    <h5><i class="fas fa-calendar-alt"></i> Quick Report Generation</h5>
+                </div>
+                <div class="card-body">
+                    <div class="row">
+                        <div class="col-md-4">
+                            <div class="card">
+                                <div class="card-header bg-success text-white">
+                                    <h6>Trial Balance</h6>
                                 </div>
-                                <div class="mb-3">
-                                    <label>Date</label>
-                                    <input type="date" name="date" class="form-control" value="<?php echo date('Y-m-d'); ?>" required>
+                                <div class="card-body">
+                                    <form target="_blank" action="trial_balance.php" method="GET">
+                                        <div class="mb-3">
+                                            <label>As on Date</label>
+                                            <input type="date" name="as_on" class="form-control" value="<?php echo date('Y-m-d'); ?>" required>
+                                        </div>
+                                        <button type="submit" class="btn btn-success w-100">
+                                            <i class="fas fa-search"></i> Generate Trial Balance
+                                        </button>
+                                    </form>
                                 </div>
-                                <button type="submit" class="btn btn-warning w-100">Generate Report</button>
-                            </form>
+                            </div>
+                        </div>
+                        
+                        <div class="col-md-4">
+                            <div class="card">
+                                <div class="card-header bg-info text-white">
+                                    <h6>General Ledger</h6>
+                                </div>
+                                <div class="card-body">
+                                    <form target="_blank" action="general_ledger.php" method="GET">
+                                        <div class="mb-3">
+                                            <label>Select Account</label>
+                                            <select name="account_id" class="form-control" required>
+                                                <option value="">Select Account</option>
+                                                <?php foreach($accounts as $acc): ?>
+                                                    <option value="<?php echo $acc['id']; ?>">
+                                                        <?php echo $acc['account_code']; ?> - <?php echo $acc['account_name']; ?>
+                                                    </option>
+                                                <?php endforeach; ?>
+                                            </select>
+                                        </div>
+                                        <div class="row">
+                                            <div class="col-md-6">
+                                                <label>From Date</label>
+                                                <input type="date" name="from_date" class="form-control" required>
+                                            </div>
+                                            <div class="col-md-6">
+                                                <label>To Date</label>
+                                                <input type="date" name="to_date" class="form-control" required>
+                                            </div>
+                                        </div>
+                                        <button type="submit" class="btn btn-info w-100 mt-2">
+                                            <i class="fas fa-search"></i> Generate Ledger
+                                        </button>
+                                    </form>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="col-md-4">
+                            <div class="card">
+                                <div class="card-header bg-warning text-dark">
+                                    <h6>Balance Sheet</h6>
+                                </div>
+                                <div class="card-body">
+                                    <form target="_blank" action="balance_sheet.php" method="GET">
+                                        <div class="mb-3">
+                                            <label>As on Date</label>
+                                            <input type="date" name="as_on" class="form-control" value="<?php echo date('Y-m-d'); ?>" required>
+                                        </div>
+                                        <button type="submit" class="btn btn-warning w-100">
+                                            <i class="fas fa-search"></i> Generate Balance Sheet
+                                        </button>
+                                    </form>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="row mt-3">
+                        <div class="col-md-4">
+                            <div class="card">
+                                <div class="card-header bg-danger text-white">
+                                    <h6>Profit & Loss</h6>
+                                </div>
+                                <div class="card-body">
+                                    <form target="_blank" action="profit_loss.php" method="GET">
+                                        <div class="row">
+                                            <div class="col-md-6">
+                                                <label>From Date</label>
+                                                <input type="date" name="from_date" class="form-control" required>
+                                            </div>
+                                            <div class="col-md-6">
+                                                <label>To Date</label>
+                                                <input type="date" name="to_date" class="form-control" required>
+                                            </div>
+                                        </div>
+                                        <button type="submit" class="btn btn-danger w-100 mt-2">
+                                            <i class="fas fa-search"></i> Generate P&L
+                                        </button>
+                                    </form>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="col-md-4">
+                            <div class="card">
+                                <div class="card-header bg-secondary text-white">
+                                    <h6>Cash Flow</h6>
+                                </div>
+                                <div class="card-body">
+                                    <form target="_blank" action="cash_flow.php" method="GET">
+                                        <div class="row">
+                                            <div class="col-md-6">
+                                                <label>From Date</label>
+                                                <input type="date" name="from_date" class="form-control" required>
+                                            </div>
+                                            <div class="col-md-6">
+                                                <label>To Date</label>
+                                                <input type="date" name="to_date" class="form-control" required>
+                                            </div>
+                                        </div>
+                                        <button type="submit" class="btn btn-secondary w-100 mt-2">
+                                            <i class="fas fa-search"></i> Generate Cash Flow
+                                        </button>
+                                    </form>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="col-md-4">
+                            <div class="card">
+                                <div class="card-header bg-dark text-white">
+                                    <h6>Cash / Bank Book</h6>
+                                </div>
+                                <div class="card-body">
+                                    <form target="_blank" action="cash_book.php" method="GET">
+                                        <div class="mb-3">
+                                            <label>Book Type</label>
+                                            <select name="book_type" class="form-control" required>
+                                                <option value="cash">Cash Book</option>
+                                                <option value="bank">Bank Book</option>
+                                            </select>
+                                        </div>
+                                        <div class="mb-3">
+                                            <label>Date</label>
+                                            <input type="date" name="date" class="form-control" value="<?php echo date('Y-m-d'); ?>" required>
+                                        </div>
+                                        <button type="submit" class="btn btn-dark w-100">
+                                            <i class="fas fa-search"></i> Generate Report
+                                        </button>
+                                    </form>
+                                </div>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -624,7 +845,6 @@ foreach($accounts as $acc) {
                 pageLength: 25
             });
             
-            // Add row to voucher table
             $('#addRow').click(function() {
                 let newRow = `
                     <tr>
@@ -646,7 +866,6 @@ foreach($accounts as $acc) {
                 $('#voucherTable tbody').append(newRow);
             });
             
-            // Remove row
             $(document).on('click', '.remove-row', function() {
                 if($('#voucherTable tbody tr').length > 1) {
                     $(this).closest('tr').remove();
@@ -654,7 +873,6 @@ foreach($accounts as $acc) {
                 }
             });
             
-            // Calculate totals
             $(document).on('input', '.debit, .credit', function() {
                 calculateTotals();
             });
