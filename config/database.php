@@ -1,13 +1,19 @@
 <?php
+
+// Start session only if not already started
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
+}
+
 $host = 'localhost';
 $dbname = 'fuel_station_management';
 $username = 'root';
 $password = '';
 
 try {
-    $pdo = new PDO("mysql:host=$host;dbname=$dbname", $username, $password);
+    $pdo = new PDO("mysql:host=$host;dbname=$dbname;charset=utf8mb4", $username, $password);
     $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-    session_start();
+    $pdo->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
 } catch(PDOException $e) {
     die("Connection failed: " . $e->getMessage());
 }
@@ -26,7 +32,7 @@ function getCurrentUser() {
     if(isset($_SESSION['user_id'])) {
         $stmt = $pdo->prepare("SELECT * FROM users WHERE id = ?");
         $stmt->execute([$_SESSION['user_id']]);
-        return $stmt->fetch(PDO::FETCH_ASSOC);
+        return $stmt->fetch();
     }
     return null;
 }

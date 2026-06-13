@@ -23,7 +23,7 @@ function getCurrentShift($pdo) {
         $startMinutes = intval($startParts[0]) * 60 + intval($startParts[1]);
         $endMinutes = intval($endParts[0]) * 60 + intval($endParts[1]);
         
-        // Handle overnight shifts (e.g., Night shift from 00:00 to 08:00)
+        // Handle overnight shifts
         if($endMinutes < $startMinutes) {
             if($currentTimeValue >= $startMinutes || $currentTimeValue <= $endMinutes) {
                 return $shift['id'];
@@ -233,20 +233,15 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['make_sale'])) {
         ];
         
         $success = "Sale completed! Invoice: $invoice_no";
-        $_SESSION['open_print'] = true;
-        header("Location: pos.php?print=1");
+        
+        // Redirect to print invoice in same window
+        header("Location: print_invoice.php");
         exit();
         
     } catch(Exception $e) {
         $pdo->rollBack();
         $error = "Error: " . $e->getMessage();
     }
-}
-
-// Check if we need to open print window
-$open_print = isset($_GET['print']) && isset($_SESSION['open_print']);
-if($open_print) {
-    unset($_SESSION['open_print']);
 }
 
 $settings = $pdo->query("SELECT setting_key, setting_value FROM system_settings")->fetchAll(PDO::FETCH_KEY_PAIR);
@@ -285,7 +280,6 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
             border-radius: 15px;
         }
         .amount-display { font-size: 28px; font-weight: bold; text-align: right; background: #f8f9fa; padding: 15px; border-radius: 10px; margin-bottom: 10px; }
-        .amount-display table { width: 100%; }
         .nozzle-btn { 
             background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%); 
             color: white; 
@@ -306,9 +300,28 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
             border-radius: 12px;
         }
         .low-stock { background: #dc3545 !important; }
-        .print-toast { position: fixed; bottom: 20px; right: 20px; background: #4CAF50; color: white; padding: 15px 20px; border-radius: 5px; display: none; z-index: 9999; }
         .total-amount { font-size: 32px; color: #28a745; }
         .shift-note { font-size: 11px; color: #28a745; margin-top: 3px; display: block; }
+        .current-time-badge {
+            background: rgba(0, 0, 0, 0.25);
+            backdrop-filter: blur(5px);
+            padding: 6px 14px;
+            border-radius: 30px;
+            font-size: 14px;
+            font-weight: 600;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            color: white;
+            font-family: 'Courier New', monospace;
+            letter-spacing: 1px;
+            border: 1px solid rgba(255,255,255,0.2);
+        }
+
+        .current-time-badge i {
+            font-size: 12px;
+            opacity: 0.9;
+        }
     </style>
 </head>
 <body>
@@ -326,8 +339,13 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
             <div class="row">
                 <div class="col-md-7">
                     <div class="pos-card">
-                        <div class="pos-card-header">
-                            <i class="fas fa-shopping-cart"></i> New Fuel Sale
+                        <div class="pos-card-header" style="display: flex; justify-content: space-between; align-items: center;">
+                            <div>
+                                <i class="fas fa-shopping-cart"></i> New Fuel Sale
+                            </div>
+                            <span class="current-time-badge" id="currentTimeDisplay">
+                                <i class="fas fa-clock"></i> <span id="liveTime">--:--:--</span>
+                            </span>
                         </div>
                         <div class="pos-card-body">
                             <form method="POST" id="saleForm">
@@ -335,7 +353,7 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                                     <div class="col-md-6">
                                         <div class="mb-3">
                                             <label><i class="fas fa-clock"></i> Shift</label>
-                                            <select name="shift_id" class="form-control" required>
+                                            <select name="shift_id" id="shift_id" class="form-control" required>
                                                 <option value="">Select Shift</option>
                                                 <?php foreach($shifts as $shift): ?>
                                                     <option value="<?php echo $shift['id']; ?>" <?php echo ($auto_shift_id == $shift['id']) ? 'selected' : ''; ?>>
@@ -344,7 +362,7 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                                                 <?php endforeach; ?>
                                             </select>
                                             <span class="shift-note">
-                                                <i class="fas fa-info-circle"></i> Shift auto-selected based on current time (<?php echo date('h:i A'); ?>)
+                                                <i class="fas fa-info-circle"></i> Shift auto-selected based on current time
                                             </span>
                                         </div>
                                     </div>
@@ -518,25 +536,26 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
         </div>
     </div>
     
-    <div id="printToast" class="print-toast">
-        <i class="fas fa-print"></i> Opening print preview...
-    </div>
-    
     <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
     <script>
-        <?php if($open_print): ?>
-        $(document).ready(function() {
-            $('#printToast').fadeIn(300);
-            setTimeout(function() {
-                var printWindow = window.open('print_invoice.php', '_blank', 'width=500,height=700,scrollbars=yes');
-                if(printWindow) { printWindow.focus(); }
-                else { alert('Please allow popups for this site to print invoices.'); }
-                setTimeout(function() { $('#printToast').fadeOut(500); }, 3000);
-            }, 500);
-        });
-        <?php endif; ?>
-        
+        // Update current time display - FIXED to ensure visibility
+        function updateCurrentTime() {
+            const now = new Date();
+            const hours = now.getHours().toString().padStart(2, '0');
+            const minutes = now.getMinutes().toString().padStart(2, '0');
+            const seconds = now.getSeconds().toString().padStart(2, '0');
+            const timeString = hours + ':' + minutes + ':' + seconds;
+            const timeDisplay = document.getElementById('currentTimeDisplay');
+            if (timeDisplay) {
+                timeDisplay.innerHTML = '<i class="fas fa-clock"></i> ' + timeString;
+            }
+        }
+        // Update time immediately and then every second
+        updateCurrentTime();
+        setInterval(updateCurrentTime, 1000);
+
+        // Nozzle selection
         document.getElementById('nozzle_id').addEventListener('change', function() {
             let option = this.options[this.selectedIndex];
             document.getElementById('product_name').value = option.getAttribute('data-product-name');
@@ -544,7 +563,8 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
             document.getElementById('unit_price').value = option.getAttribute('data-price');
             calculateTotal();
         });
-        
+
+        // Quick nozzle selection
         document.querySelectorAll('.quick-nozzle').forEach(btn => {
             btn.addEventListener('click', function() {
                 document.getElementById('nozzle_id').value = this.getAttribute('data-id');
@@ -557,7 +577,8 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                 calculateTotal();
             });
         });
-        
+
+        // Quick product selection
         document.querySelectorAll('.quick-product').forEach(btn => {
             btn.addEventListener('click', function() {
                 document.getElementById('product_name').value = this.getAttribute('data-name');
@@ -567,11 +588,11 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                 calculateTotal();
             });
         });
-        
+
         document.getElementById('quantity').addEventListener('input', calculateTotal);
         document.getElementById('unit_price').addEventListener('input', calculateTotal);
         document.getElementById('received').addEventListener('input', calculateChange);
-        
+
         document.getElementById('sale_type').addEventListener('change', function() {
             if(this.value == 'credit') {
                 document.getElementById('customer_fields').style.display = 'block';
@@ -582,6 +603,46 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                 document.getElementById('cash_fields').style.display = 'block';
                 document.getElementById('customer_name').removeAttribute('required');
                 document.getElementById('received').value = '';
+            }
+        });
+
+        function calculateTotal() {
+            let qty = parseFloat(document.getElementById('quantity').value) || 0;
+            let price = parseFloat(document.getElementById('unit_price').value) || 0;
+            let total = qty * price;
+            
+            document.getElementById('total_amount').innerText = total.toFixed(2);
+            calculateChange();
+        }
+
+        function calculateChange() {
+            let total = parseFloat(document.getElementById('total_amount').innerText) || 0;
+            let received = parseFloat(document.getElementById('received').value) || 0;
+            let change = received - total;
+            document.getElementById('change_amount').value = change.toFixed(2);
+        }
+
+        document.getElementById('saleForm').addEventListener('submit', function(e) {
+            let nozzle = document.getElementById('nozzle_id').value;
+            let quantity = document.getElementById('quantity').value;
+            let saleType = document.getElementById('sale_type').value;
+            
+            if(!nozzle) { e.preventDefault(); alert('Please select a nozzle'); return false; }
+            if(!quantity || quantity <= 0) { e.preventDefault(); alert('Please enter valid quantity'); return false; }
+            
+            // Check stock limit
+            let selectedNozzle = document.getElementById('nozzle_id').options[document.getElementById('nozzle_id').selectedIndex];
+            let availableStock = parseFloat(selectedNozzle.getAttribute('data-stock')) || 0;
+            
+            if(parseFloat(quantity) > availableStock) {
+                e.preventDefault();
+                alert('Insufficient stock! Available: ' + availableStock.toFixed(2) + ' Liters');
+                return false;
+            }
+            
+            if(saleType == 'credit') {
+                let customerName = document.getElementById('customer_name').value;
+                if(!customerName) { e.preventDefault(); alert('Please enter customer name for credit sale'); return false; }
             }
         });
         

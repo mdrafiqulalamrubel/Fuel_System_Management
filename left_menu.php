@@ -1,6 +1,7 @@
 <?php
 $current_page = basename($_SERVER['PHP_SELF']);
 $user = getCurrentUser();
+$user_role = $user['role'] ?? 'guest';
 ?>
 
 <style>
@@ -171,15 +172,6 @@ $user = getCurrentUser();
         font-size: 10px;
     }
     
-    .nav-link .dropdown-icon {
-        margin-left: auto;
-        transition: transform 0.3s;
-    }
-    
-    .nav-link .dropdown-icon.rotated {
-        transform: rotate(90deg);
-    }
-    
     .dropdown-menu-custom {
         background: rgba(255,255,255,0.1);
         margin-left: 35px;
@@ -275,7 +267,7 @@ $user = getCurrentUser();
     </div>
     
     <ul class="nav-menu">
-        <!-- Dashboard -->
+        <!-- Dashboard - Everyone can see -->
         <li class="nav-item <?php echo $current_page == 'dashboard.php' ? 'active' : ''; ?>">
             <a class="nav-link" href="dashboard.php">
                 <i class="fas fa-tachometer-alt"></i>
@@ -283,7 +275,7 @@ $user = getCurrentUser();
             </a>
         </li>
         
-        <!-- POS & Sales Section -->
+        <!-- POS & Sales Section - Everyone can see -->
         <li class="nav-title">POINT OF SALE</li>
         <li class="nav-item <?php echo $current_page == 'pos.php' ? 'active' : ''; ?>">
             <a class="nav-link" href="pos.php">
@@ -293,7 +285,7 @@ $user = getCurrentUser();
             </a>
         </li>
         
-        <!-- Inventory Management Section -->
+        <!-- Inventory Management Section - Everyone can see -->
         <li class="nav-title" onclick="toggleSection('inventorySection')" style="cursor: pointer;">
             <i class="fas fa-chevron-right" id="inventoryIcon" style="font-size: 10px; margin-right: 5px;"></i> INVENTORY
         </li>
@@ -324,7 +316,8 @@ $user = getCurrentUser();
             </li>
         </div>
         
-        <!-- Accounting Section -->
+        <!-- Accounting Section - Accountant and above -->
+        <?php if(in_array($user_role, ['super_admin', 'admin', 'accountant'])): ?>
         <li class="nav-title" onclick="toggleSection('accountingSection')" style="cursor: pointer;">
             <i class="fas fa-chevron-right" id="accountingIcon" style="font-size: 10px; margin-right: 5px;"></i> ACCOUNTING
         </li>
@@ -342,8 +335,10 @@ $user = getCurrentUser();
                 </a>
             </li>
         </div>
+        <?php endif; ?>
         
-        <!-- Financial Reports Section -->
+        <!-- Financial Reports Section - Accountant and above -->
+        <?php if(in_array($user_role, ['super_admin', 'admin', 'accountant'])): ?>
         <li class="nav-title" onclick="toggleSection('financialSection')" style="cursor: pointer;">
             <i class="fas fa-chevron-right" id="financialIcon" style="font-size: 10px; margin-right: 5px;"></i> FINANCIAL REPORTS
         </li>
@@ -379,8 +374,9 @@ $user = getCurrentUser();
                 </a>
             </li>
         </div>
+        <?php endif; ?>
         
-        <!-- Sales Reports Section -->
+        <!-- Sales Reports Section - Everyone can see -->
         <li class="nav-title" onclick="toggleSection('salesReportSection')" style="cursor: pointer;">
             <i class="fas fa-chevron-right" id="salesReportIcon" style="font-size: 10px; margin-right: 5px;"></i> SALES REPORTS
         </li>
@@ -405,7 +401,8 @@ $user = getCurrentUser();
             </li>
         </div>
         
-        <!-- HR & Payroll Section -->
+        <!-- HR & Payroll Section - HR and above -->
+        <?php if(in_array($user_role, ['super_admin', 'admin', 'hr_officer'])): ?>
         <li class="nav-title" onclick="toggleSection('hrSection')" style="cursor: pointer;">
             <i class="fas fa-chevron-right" id="hrIcon" style="font-size: 10px; margin-right: 5px;"></i> HUMAN RESOURCES
         </li>
@@ -441,8 +438,9 @@ $user = getCurrentUser();
                 </a>
             </li>
         </div>
+        <?php endif; ?>
         
-        <!-- Rental & Income Section -->
+        <!-- Rental & Income Section - Everyone can see -->
         <li class="nav-title" onclick="toggleSection('rentalSection')" style="cursor: pointer;">
             <i class="fas fa-chevron-right" id="rentalIcon" style="font-size: 10px; margin-right: 5px;"></i> RENTAL & INCOME
         </li>
@@ -455,7 +453,7 @@ $user = getCurrentUser();
             </li>
         </div>
         
-        <!-- Inventory Reports Section -->
+        <!-- Inventory Reports Section - Everyone can see -->
         <li class="nav-title" onclick="toggleSection('inventoryReportSection')" style="cursor: pointer;">
             <i class="fas fa-chevron-right" id="inventoryReportIcon" style="font-size: 10px; margin-right: 5px;"></i> INVENTORY REPORTS
         </li>
@@ -474,7 +472,7 @@ $user = getCurrentUser();
             </li>
         </div> 
         
-        <!-- Customer Reports Section -->
+        <!-- Customer Reports Section - Everyone can see -->
         <li class="nav-title" onclick="toggleSection('customerSection')" style="cursor: pointer;">
             <i class="fas fa-chevron-right" id="customerIcon" style="font-size: 10px; margin-right: 5px;"></i> CUSTOMER REPORTS
         </li>
@@ -493,7 +491,7 @@ $user = getCurrentUser();
             </li>
         </div>
 
-        <!-- Reports Center -->
+        <!-- Reports Center - Everyone can see -->
         <li class="nav-item <?php echo $current_page == 'reports.php' ? 'active' : ''; ?>">
             <a class="nav-link" href="reports.php">
                 <i class="fas fa-chart-bar"></i>
@@ -501,7 +499,8 @@ $user = getCurrentUser();
             </a>
         </li>
         
-        <!-- Settings Section -->
+        <!-- Settings Section - Only Super Admin and Admin -->
+        <?php if(in_array($user_role, ['super_admin', 'admin'])): ?>
         <li class="nav-divider"></li>        
         <li class="nav-title" onclick="toggleSection('settingsSection')" style="cursor: pointer;">
             <i class="fas fa-chevron-right" id="settingsIcon" style="font-size: 10px; margin-right: 5px;"></i> SETTINGS
@@ -531,13 +530,14 @@ $user = getCurrentUser();
                     <span>Nozzle Settings</span>
                 </a>
             </li>
+            <?php if($user_role == 'super_admin'): ?>
             <li class="nav-item">
                 <a class="nav-link" href="settings.php?tab=users">
                     <i class="fas fa-user-plus"></i>
                     <span>Manage Users</span>
                 </a>
             </li>
-
+            <?php endif; ?>
             <li class="nav-item <?php echo $current_page == 'shift_schedule.php' ? 'active' : ''; ?>">
                 <a class="nav-link" href="shift_schedule.php">
                     <i class="fas fa-clock"></i>
@@ -545,8 +545,9 @@ $user = getCurrentUser();
                 </a>
             </li>
         </div>
+        <?php endif; ?>
         
-        <!-- Logout -->
+        <!-- Logout - Everyone can see -->
         <li class="nav-divider"></li>
         <li class="nav-item">
             <a class="nav-link" href="logout.php">
@@ -589,15 +590,17 @@ $user = getCurrentUser();
     function toggleSection(sectionId) {
         const section = document.getElementById(sectionId);
         const icon = document.getElementById(sectionId.replace('Section', 'Icon'));
-        section.classList.toggle('show');
-        if (icon) {
-            icon.classList.toggle('fa-chevron-right');
-            icon.classList.toggle('fa-chevron-down');
+        if (section) {
+            section.classList.toggle('show');
+            if (icon) {
+                icon.classList.toggle('fa-chevron-right');
+                icon.classList.toggle('fa-chevron-down');
+            }
+            
+            // Save state to localStorage
+            const sectionState = localStorage.getItem(sectionId + 'State');
+            localStorage.setItem(sectionId + 'State', section.classList.contains('show') ? 'open' : 'closed');
         }
-        
-        // Save state to localStorage
-        const sectionState = localStorage.getItem(sectionId + 'State');
-        localStorage.setItem(sectionId + 'State', section.classList.contains('show') ? 'open' : 'closed');
     }
     
     function toggleMobileMenu() {
@@ -613,15 +616,18 @@ $user = getCurrentUser();
         }
         
         // Load section states
-        const sections = ['inventorySection', 'accountingSection', 'financialSection', 'salesReportSection', 'hrSection', 'rentalSection', 'inventoryReportSection', 'settingsSection'];
+        const sections = ['inventorySection', 'accountingSection', 'financialSection', 'salesReportSection', 'hrSection', 'rentalSection', 'inventoryReportSection', 'customerSection', 'settingsSection'];
         sections.forEach(section => {
-            const savedSectionState = localStorage.getItem(section + 'State');
-            if (savedSectionState === 'open') {
-                document.getElementById(section).classList.add('show');
-                const icon = document.getElementById(section.replace('Section', 'Icon'));
-                if (icon) {
-                    icon.classList.remove('fa-chevron-right');
-                    icon.classList.add('fa-chevron-down');
+            const sectionElement = document.getElementById(section);
+            if (sectionElement) {
+                const savedSectionState = localStorage.getItem(section + 'State');
+                if (savedSectionState === 'open') {
+                    sectionElement.classList.add('show');
+                    const icon = document.getElementById(section.replace('Section', 'Icon'));
+                    if (icon) {
+                        icon.classList.remove('fa-chevron-right');
+                        icon.classList.add('fa-chevron-down');
+                    }
                 }
             }
         });

@@ -1,16 +1,17 @@
 <?php
-session_start();
+// No need for session_start() here - it's already in database.php
+require_once 'config/database.php';
+
 if(!isset($_SESSION['last_invoice'])) {
     echo "<h3>No invoice to print</h3>";
     echo "<p>Please complete a sale first.</p>";
-    echo '<button onclick="window.close()">Close Window</button>';
+    echo '<button onclick="window.location.href=\'pos.php\'" class="btn btn-primary">Go to POS</button>';
     exit;
 }
 
 $invoice = $_SESSION['last_invoice'];
 
 // Get product name from database
-require_once 'config/database.php';
 $product_name = 'Fuel';
 if(isset($invoice['product_id']) && $invoice['product_id']) {
     $stmt = $pdo->prepare("SELECT product_name FROM fuel_products WHERE id = ?");
@@ -29,6 +30,7 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
 <html lang="en">
 <head>
     <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Print Invoice</title>
     <style>
         * {
@@ -128,7 +130,7 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
         
         .grand-total {
             font-weight: bold;
-            font-size: 14px;
+            font-size: 12px;
             margin-top: 5px;
             padding-top: 5px;
             border-top: 1px solid #000;
@@ -152,15 +154,16 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
             margin-bottom: 15px;
             padding: 10px;
             background: #f0f0f0;
+            border-radius: 5px;
         }
         
         .btn {
-            padding: 8px 16px;
+            padding: 10px 20px;
             margin: 0 5px;
-            font-size: 12px;
+            font-size: 14px;
             cursor: pointer;
             border: none;
-            border-radius: 4px;
+            border-radius: 5px;
         }
         
         .btn-print {
@@ -168,16 +171,58 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
             color: white;
         }
         
-        .btn-close {
-            background: #f44336;
+        .btn-back {
+            background: #007bff;
             color: white;
+        }
+        
+        .button-bar {
+            position: fixed;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 1000;
+            background: white;
+            padding: 10px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+            display: flex;
+            gap: 10px;
+        }
+        
+        @media print {
+            .button-bar {
+                display: none;
+            }
+        }
+        
+        .print-progress {
+            text-align: center;
+            margin-bottom: 15px;
+            padding: 10px;
+            background: #e3f2fd;
+            border-radius: 5px;
+            display: none;
+        }
+        
+        .print-progress.show {
+            display: block;
         }
     </style>
 </head>
 <body>
-    <div class="no-print">
-        <button class="btn btn-print" onclick="printInvoice()">🖨️ Print</button>
-        <button class="btn btn-close" onclick="closeWindow()">❌ Close</button>
+    <!-- Floating Button Bar -->
+    <div class="button-bar no-print">
+        <button class="btn btn-print" onclick="printInvoice()">
+            🖨️ Print Invoice
+        </button>
+        <button class="btn btn-back" onclick="goBackToPOS()">
+            ◀ Back to POS Screen
+        </button>
+    </div>
+    
+    <div class="print-progress" id="printProgress">
+        <i class="fas fa-spinner fa-spin"></i> Preparing print... Please wait.
     </div>
     
     <div class="invoice" id="invoiceContent">
@@ -259,38 +304,56 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
     </div>
     
     <script>
+        let printAttempted = false;
+        
         function printInvoice() {
-            // Hide buttons
-            var buttons = document.querySelector('.no-print');
-            if (buttons) {
-                buttons.style.display = 'none';
+            if(printAttempted) return;
+            printAttempted = true;
+            
+            // Show progress indicator
+            var progress = document.getElementById('printProgress');
+            if(progress) {
+                progress.classList.add('show');
             }
-            // Print
-            window.print();
-            // Show buttons after print (for possible reprint)
+            
+            // Small delay to ensure everything is ready
             setTimeout(function() {
-                if (buttons) {
-                    buttons.style.display = 'block';
-                }
-            }, 1000);
+                // Trigger print
+                window.print();
+                
+                // After print dialog closes
+                window.onafterprint = function() {
+                    // Hide progress
+                    if(progress) {
+                        progress.classList.remove('show');
+                    }
+                    // Ask user if they want to go back
+                    if(confirm('Print completed! Do you want to go back to POS screen?')) {
+                        goBackToPOS();
+                    }
+                };
+            }, 500);
         }
         
-        function closeWindow() {
-            window.close();
+        function goBackToPOS() {
+            window.location.href = 'pos.php';
         }
         
-        // Auto print on load
+        // Auto print when page loads
         window.onload = function() {
             setTimeout(function() {
                 printInvoice();
-            }, 500);
+            }, 1000);
         };
         
-        // Auto close after printing
+        // Handle page unload to prevent accidental navigation
+        window.onbeforeunload = function() {
+            return false;
+        };
+        
+        // Remove beforeunload after print
         window.onafterprint = function() {
-            setTimeout(function() {
-                window.close();
-            }, 1500);
+            window.onbeforeunload = null;
         };
     </script>
 </body>
