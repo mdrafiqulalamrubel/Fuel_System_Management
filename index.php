@@ -374,7 +374,7 @@ if($_SERVER['REQUEST_METHOD'] == 'POST') {
                         <i class="fas fa-gas-pump"></i>
                     </div>
                     <div class="logo-text">
-                        <h2>FF Enterprise</h2>
+                        <h2>Daffodil FuelStation</h2>
                         <p>Fuel Station Management System</p>
                     </div>
                 </div>
@@ -404,7 +404,7 @@ if($_SERVER['REQUEST_METHOD'] == 'POST') {
                 </div>
                 
                 <div class="footer-note">
-                    <p>&copy; 2024 FF Enterprise. All rights reserved.</p>
+                    <p>&copy; 2024 DSL.  All rights reserved.</p>
                 </div>
             </div>
         </div>

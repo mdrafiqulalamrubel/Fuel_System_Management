@@ -262,7 +262,7 @@ $user = getCurrentUser();
         <button class="toggle-btn" onclick="toggleSidebar()">
             <i class="fas fa-chevron-left" id="toggleIcon"></i>
         </button>
-        <h3><i class="fas fa-gas-pump"></i> FF Enterprise</h3>
+        <h3><i class="fas fa-gas-pump"></i> DAFFODIL Station</h3>
         <p>Fuel Station Management</p>
     </div>
     
