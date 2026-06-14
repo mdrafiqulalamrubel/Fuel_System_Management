@@ -7,7 +7,7 @@ $error = '';
 $success = '';
 $active_tab = $_GET['tab'] ?? 'employees';
 
-// Add/Edit Employee
+// Add Employee
 if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['save_employee'])) {
     $employee_id = $_POST['employee_id'];
     $full_name = $_POST['full_name'];
@@ -19,7 +19,7 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['save_employee'])) {
     $address = $_POST['address'];
     $bank_account_no = $_POST['bank_account_no'];
     
-    $stmt = $pdo->prepare("INSERT INTO employees (employee_id, full_name, designation, department, joining_date, basic_salary, phone, address, bank_account_no) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
+    $stmt = $pdo->prepare("INSERT INTO employees (employee_id, full_name, designation, department, joining_date, basic_salary, phone, address, bank_account_no, is_active) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)");
     if($stmt->execute([$employee_id, $full_name, $designation, $department, $joining_date, $basic_salary, $phone, $address, $bank_account_no])) {
         $success = "Employee added successfully!";
     } else {
@@ -29,8 +29,8 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['save_employee'])) {
 
 // Update Employee
 if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['update_employee'])) {
-    $emp_id = $_POST['emp_id'];
-    $employee_id = $_POST['employee_id'];
+    $id = $_POST['employee_id'];
+    $employee_id = $_POST['emp_id'];
     $full_name = $_POST['full_name'];
     $designation = $_POST['designation'];
     $department = $_POST['department'];
@@ -41,7 +41,7 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['update_employee'])) {
     $bank_account_no = $_POST['bank_account_no'];
     
     $stmt = $pdo->prepare("UPDATE employees SET employee_id = ?, full_name = ?, designation = ?, department = ?, joining_date = ?, basic_salary = ?, phone = ?, address = ?, bank_account_no = ? WHERE id = ?");
-    if($stmt->execute([$employee_id, $full_name, $designation, $department, $joining_date, $basic_salary, $phone, $address, $bank_account_no, $emp_id])) {
+    if($stmt->execute([$employee_id, $full_name, $designation, $department, $joining_date, $basic_salary, $phone, $address, $bank_account_no, $id])) {
         $success = "Employee updated successfully!";
     } else {
         $error = "Failed to update employee";
@@ -50,104 +50,113 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['update_employee'])) {
 
 // Delete Employee
 if(isset($_GET['delete_id'])) {
-    $stmt = $pdo->prepare("DELETE FROM employees WHERE id = ?");
+    $stmt = $pdo->prepare("UPDATE employees SET is_active = 0 WHERE id = ?");
     if($stmt->execute([$_GET['delete_id']])) {
-        $success = "Employee deleted successfully!";
+        $success = "Employee deactivated successfully!";
     }
 }
 
-// Process Attendance
+// Record Attendance
 if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['save_attendance'])) {
-    $attendance_data = $_POST['attendance'];
+    $employee_id = $_POST['employee_id'];
     $attendance_date = $_POST['attendance_date'];
+    $check_in_time = $_POST['check_in_time'];
+    $check_out_time = $_POST['check_out_time'];
+    $status = $_POST['status'];
+    $overtime_hours = $_POST['overtime_hours'];
     
-    try {
-        foreach($attendance_data as $emp_id => $data) {
-            $status = $data['status'];
-            $check_in = $data['check_in'];
-            $check_out = $data['check_out'];
-            $overtime = $data['overtime'];
-            
-            $stmt = $pdo->prepare("INSERT INTO attendance (employee_id, attendance_date, check_in_time, check_out_time, status, overtime_hours) VALUES (?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE check_in_time = ?, check_out_time = ?, status = ?, overtime_hours = ?");
-            $stmt->execute([$emp_id, $attendance_date, $check_in, $check_out, $status, $overtime, $check_in, $check_out, $status, $overtime]);
+    // Check if attendance already exists for this date
+    $stmt = $pdo->prepare("SELECT id FROM attendance WHERE employee_id = ? AND attendance_date = ?");
+    $stmt->execute([$employee_id, $attendance_date]);
+    if($stmt->fetch()) {
+        $stmt = $pdo->prepare("UPDATE attendance SET check_in_time = ?, check_out_time = ?, status = ?, overtime_hours = ? WHERE employee_id = ? AND attendance_date = ?");
+        if($stmt->execute([$check_in_time, $check_out_time, $status, $overtime_hours, $employee_id, $attendance_date])) {
+            $success = "Attendance updated successfully!";
         }
-        $success = "Attendance saved successfully!";
-    } catch(Exception $e) {
-        $error = "Error: " . $e->getMessage();
+    } else {
+        $stmt = $pdo->prepare("INSERT INTO attendance (employee_id, attendance_date, check_in_time, check_out_time, status, overtime_hours) VALUES (?, ?, ?, ?, ?, ?)");
+        if($stmt->execute([$employee_id, $attendance_date, $check_in_time, $check_out_time, $status, $overtime_hours])) {
+            $success = "Attendance recorded successfully!";
+        }
     }
 }
 
-// Process Payroll
+// Generate Payroll
 if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['generate_payroll'])) {
     $month_year = $_POST['month_year'];
-    $month = date('m', strtotime($month_year . '-01'));
-    $year = date('Y', strtotime($month_year . '-01'));
+    $employee_id = $_POST['employee_id'];
     
-    try {
-        $employees = $pdo->query("SELECT * FROM employees WHERE is_active = 1")->fetchAll();
-        
-        foreach($employees as $emp) {
-            $stmt = $pdo->prepare("SELECT COUNT(*) as present_days, SUM(overtime_hours) as total_overtime FROM attendance WHERE employee_id = ? AND MONTH(attendance_date) = ? AND YEAR(attendance_date) = ? AND status = 'present'");
-            $stmt->execute([$emp['id'], $month, $year]);
-            $attendance = $stmt->fetch();
+    // Get employee details
+    $stmt = $pdo->prepare("SELECT * FROM employees WHERE id = ?");
+    $stmt->execute([$employee_id]);
+    $employee = $stmt->fetch();
+    
+    if(!$employee) {
+        $error = "Employee not found!";
+    } else {
+        // Check if payroll already generated
+        $stmt = $pdo->prepare("SELECT id FROM payroll WHERE employee_id = ? AND month_year = ?");
+        $stmt->execute([$employee_id, $month_year]);
+        if($stmt->fetch()) {
+            $error = "Payroll for this month already generated!";
+        } else {
+            // Calculate overtime amount
+            $stmt = $pdo->prepare("SELECT SUM(overtime_hours) as total_overtime FROM attendance WHERE employee_id = ? AND DATE_FORMAT(attendance_date, '%Y-%m') = ?");
+            $stmt->execute([$employee_id, $month_year]);
+            $total_overtime = $stmt->fetch()['total_overtime'] ?? 0;
             
-            $present_days = $attendance['present_days'] ?? 0;
-            $total_overtime = $attendance['total_overtime'] ?? 0;
+            $overtime_rate = ($employee['basic_salary'] / 30 / 8) * 1.5; // 1.5x hourly rate
+            $overtime_amount = $total_overtime * $overtime_rate;
             
-            $allowances = $emp['basic_salary'] * 0.40;
-            $hourly_rate = $emp['basic_salary'] / 30 / 8;
-            $overtime_amount = $total_overtime * $hourly_rate * 1.5;
-            $bonus = ($present_days >= 26) ? $emp['basic_salary'] * 0.05 : 0;
-            $deductions = $emp['basic_salary'] * 0.10;
-            $net_salary = $emp['basic_salary'] + $allowances + $overtime_amount + $bonus - $deductions;
+            $allowances = $employee['basic_salary'] * 0.2; // 20% allowances
+            $deductions = $employee['basic_salary'] * 0.1; // 10% deductions
+            $net_salary = $employee['basic_salary'] + $allowances + $overtime_amount - $deductions;
             
-            $stmt = $pdo->prepare("SELECT id FROM payroll WHERE employee_id = ? AND month_year = ?");
-            $stmt->execute([$emp['id'], $month_year]);
-            
-            if($stmt->fetch()) {
-                $stmt = $pdo->prepare("UPDATE payroll SET basic_salary = ?, allowances = ?, overtime_amount = ?, bonus = ?, deductions = ?, net_salary = ? WHERE employee_id = ? AND month_year = ?");
-                $stmt->execute([$emp['basic_salary'], $allowances, $overtime_amount, $bonus, $deductions, $net_salary, $emp['id'], $month_year]);
+            $stmt = $pdo->prepare("INSERT INTO payroll (employee_id, month_year, basic_salary, allowances, overtime_amount, bonus, deductions, net_salary, status) VALUES (?, ?, ?, ?, ?, 0, ?, ?, 'pending')");
+            if($stmt->execute([$employee_id, $month_year, $employee['basic_salary'], $allowances, $overtime_amount, $deductions, $net_salary])) {
+                $success = "Payroll generated successfully!";
             } else {
-                $stmt = $pdo->prepare("INSERT INTO payroll (employee_id, month_year, basic_salary, allowances, overtime_amount, bonus, deductions, net_salary) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
-                $stmt->execute([$emp['id'], $month_year, $emp['basic_salary'], $allowances, $overtime_amount, $bonus, $deductions, $net_salary]);
+                $error = "Failed to generate payroll";
             }
         }
-        $success = "Payroll generated successfully for " . date('F Y', strtotime($month_year . '-01'));
-    } catch(Exception $e) {
-        $error = "Error: " . $e->getMessage();
     }
 }
 
-// Mark Payroll as Paid
-if(isset($_GET['mark_paid'])) {
-    $payroll_id = $_GET['mark_paid'];
-    $stmt = $pdo->prepare("UPDATE payroll SET status = 'paid', payment_date = CURDATE() WHERE id = ?");
-    if($stmt->execute([$payroll_id])) {
-        $success = "Payroll marked as paid!";
+// Process Payroll Payment
+if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['pay_salary'])) {
+    $payroll_id = $_POST['payroll_id'];
+    $payment_date = $_POST['payment_date'];
+    
+    $stmt = $pdo->prepare("UPDATE payroll SET status = 'paid', payment_date = ? WHERE id = ?");
+    if($stmt->execute([$payment_date, $payroll_id])) {
+        $success = "Salary paid successfully!";
     } else {
-        $error = "Failed to update status";
+        $error = "Failed to process payment";
     }
 }
 
-// Get data for display
+// Get data
 $employees = $pdo->query("SELECT * FROM employees WHERE is_active = 1 ORDER BY full_name")->fetchAll();
-$today = date('Y-m-d');
-$attendance_date = $_GET['attendance_date'] ?? $today;
-$current_attendance = $pdo->prepare("SELECT * FROM attendance WHERE attendance_date = ?");
-$current_attendance->execute([$attendance_date]);
-$attendance_map = [];
-while($row = $current_attendance->fetch()) {
-    $attendance_map[$row['employee_id']] = $row;
-}
+$attendance = $pdo->query("
+    SELECT a.*, e.full_name, e.designation 
+    FROM attendance a 
+    JOIN employees e ON a.employee_id = e.id 
+    ORDER BY a.attendance_date DESC 
+    LIMIT 200
+")->fetchAll();
 
-$payroll_list = $pdo->query("SELECT p.*, e.full_name, e.designation FROM payroll p JOIN employees e ON p.employee_id = e.id ORDER BY p.month_year DESC, e.full_name")->fetchAll();
+$payroll = $pdo->query("
+    SELECT p.*, e.full_name, e.designation, e.employee_id 
+    FROM payroll p 
+    JOIN employees e ON p.employee_id = e.id 
+    ORDER BY p.month_year DESC, p.id DESC
+")->fetchAll();
 
-$edit_employee = null;
-if(isset($_GET['edit_id'])) {
-    $stmt = $pdo->prepare("SELECT * FROM employees WHERE id = ?");
-    $stmt->execute([$_GET['edit_id']]);
-    $edit_employee = $stmt->fetch();
-}
+// Calculate statistics
+$total_employees = count($employees);
+$total_salary = array_sum(array_column($payroll, 'net_salary'));
+$pending_payroll = count(array_filter($payroll, fn($p) => $p['status'] == 'pending'));
+$total_attendance = count($attendance);
 
 $settings = $pdo->query("SELECT setting_key, setting_value FROM system_settings")->fetchAll(PDO::FETCH_KEY_PAIR);
 $currency = $settings['currency_symbol'] ?? 'BDT';
@@ -157,7 +166,7 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Payroll Management</title>
+    <title>HR & Payroll Management</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdn.datatables.net/1.11.5/css/dataTables.bootstrap5.min.css">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
@@ -168,37 +177,64 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
             border-radius: 15px;
             padding: 20px;
             margin-bottom: 20px;
+            transition: transform 0.3s;
         }
-        .form-sticky {
-            position: sticky;
-            top: 20px;
+        .stats-card:hover { transform: translateY(-5px); }
+        .stats-card i { font-size: 40px; opacity: 0.5; float: right; }
+        
+        /* ===== FIXED TAB STYLES ===== */
+        .nav-tabs {
+            border-bottom: 2px solid #dee2e6;
+            margin-bottom: 20px;
         }
-        .table-responsive {
-            overflow-x: auto;
+        
+        .nav-tabs .nav-link {
+            color: #495057 !important;
+            background: #e9ecef !important;
+            border-radius: 8px 8px 0 0;
+            margin-right: 5px;
+            font-weight: 500;
+            padding: 10px 20px;
+            border: none;
+            transition: all 0.3s ease;
         }
-        .text-end {
-            text-align: right;
+        
+        .nav-tabs .nav-link:hover {
+            background: #dee2e6 !important;
+            color: #000 !important;
         }
-        @media print {
-            .sidebar, .no-print, .stats-card, .btn, .nav-tabs, .card-header .btn, .form-sticky {
-                display: none !important;
-            }
-            .main-content {
-                margin: 0 !important;
-                padding: 10px !important;
-            }
-            .print-header {
-                display: block !important;
-                text-align: center;
-                margin-bottom: 20px;
-            }
-            .table th, .table td {
-                border: 1px solid #000 !important;
-            }
+        
+        .nav-tabs .nav-link.active {
+            color: white !important;
+            font-weight: 600;
         }
-        .print-header {
-            display: none;
+        
+        .nav-tabs .nav-link.active i {
+            color: white !important;
         }
+        
+        .nav-tabs .nav-link i {
+            margin-right: 8px;
+        }
+        
+        /* Active tab colors */
+        .nav-tabs .nav-link:nth-child(1).active {
+            background: #007bff !important;
+        }
+        
+        .nav-tabs .nav-link:nth-child(2).active {
+            background: #17a2b8 !important;
+        }
+        
+        .nav-tabs .nav-link:nth-child(3).active {
+            background: #ffc107 !important;
+            color: #333 !important;
+        }
+        
+        .nav-tabs .nav-link:nth-child(4).active {
+            background: #28a745 !important;
+        }
+        /* ===== END FIXED TAB STYLES ===== */
     </style>
 </head>
 <body>
@@ -206,66 +242,60 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
     
     <div class="main-content">
         <div class="container-fluid">
-            <!-- Print Header for Employee List -->
-            <div class="print-header">
-                <h2><?php echo $settings['company_name'] ?? 'FF Enterprise'; ?></h2>
-                <h4>Employee List Report</h4>
-                <p>Generated on: <?php echo date('d/m/Y h:i:s A'); ?></p>
-                <hr>
-            </div>
-            
             <div class="d-flex justify-content-between align-items-center mb-4">
-                <h2><i class="fas fa-users"></i> Payroll Management System</h2>
-                <div class="no-print">
-                    <button onclick="printEmployeeList()" class="btn btn-info">
-                        <i class="fas fa-print"></i> Print Employee List
-                    </button>
-                    <a href="dashboard.php" class="btn btn-secondary">
-                        <i class="fas fa-arrow-left"></i> Back to Dashboard
-                    </a>
-                </div>
+                <h2><i class="fas fa-users"></i> HR & Payroll Management</h2>
+                <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addEmployeeModal">
+                    <i class="fas fa-plus"></i> Add New Employee
+                </button>
             </div>
             
             <?php if($error): ?>
-                <div class="alert alert-danger"><?php echo $error; ?></div>
+                <div class="alert alert-danger alert-dismissible fade show">
+                    <i class="fas fa-exclamation-circle"></i> <?php echo htmlspecialchars($error); ?>
+                    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                </div>
             <?php endif; ?>
             <?php if($success): ?>
-                <div class="alert alert-success"><?php echo $success; ?></div>
+                <div class="alert alert-success alert-dismissible fade show">
+                    <i class="fas fa-check-circle"></i> <?php echo htmlspecialchars($success); ?>
+                    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                </div>
             <?php endif; ?>
             
             <!-- Statistics Cards -->
-            <div class="row no-print">
+            <div class="row">
                 <div class="col-md-3">
                     <div class="stats-card">
-                        <i class="fas fa-users fa-2x"></i>
-                        <h3><?php echo count($employees); ?></h3>
+                        <i class="fas fa-users"></i>
+                        <h3><?php echo $total_employees; ?></h3>
                         <p>Total Employees</p>
                     </div>
                 </div>
                 <div class="col-md-3">
                     <div class="stats-card" style="background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);">
-                        <i class="fas fa-money-bill-wave fa-2x"></i>
-                        <h3><?php echo $currency; ?> <?php echo number_format(array_sum(array_column($employees, 'basic_salary')), 0); ?></h3>
-                        <p>Monthly Salary Budget</p>
+                        <i class="fas fa-money-bill-wave"></i>
+                        <h3><?php echo $currency; ?> <?php echo number_format($total_salary, 2); ?></h3>
+                        <p>Total Salary Paid</p>
                     </div>
                 </div>
                 <div class="col-md-3">
                     <div class="stats-card" style="background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);">
-                        <i class="fas fa-clock fa-2x"></i>
-                        <h3><?php echo count($payroll_list); ?></h3>
-                        <p>Payroll Generated</p>
+                        <i class="fas fa-clock"></i>
+                        <h3><?php echo $pending_payroll; ?></h3>
+                        <p>Pending Payments</p>
                     </div>
                 </div>
                 <div class="col-md-3">
                     <div class="stats-card" style="background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);">
-                        <i class="fas fa-calendar-check fa-2x"></i>
-                        <h3><?php echo date('F Y'); ?></h3>
-                        <p>Current Month</p>
+                        <i class="fas fa-calendar-check"></i>
+                        <h3><?php echo $total_attendance; ?></h3>
+                        <p>Total Attendance</p>
                     </div>
                 </div>
             </div>
             
-            <ul class="nav nav-tabs no-print">
+            <!-- Tabs - FIXED COLORS -->
+            <ul class="nav nav-tabs mb-3">
                 <li class="nav-item">
                     <a class="nav-link <?php echo $active_tab == 'employees' ? 'active' : ''; ?>" href="?tab=employees">
                         <i class="fas fa-users"></i> Employees
@@ -273,152 +303,74 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                 </li>
                 <li class="nav-item">
                     <a class="nav-link <?php echo $active_tab == 'attendance' ? 'active' : ''; ?>" href="?tab=attendance">
-                        <i class="fas fa-clock"></i> Attendance
+                        <i class="fas fa-calendar-alt"></i> Attendance
                     </a>
                 </li>
                 <li class="nav-item">
                     <a class="nav-link <?php echo $active_tab == 'payroll' ? 'active' : ''; ?>" href="?tab=payroll">
-                        <i class="fas fa-money-check"></i> Payroll
+                        <i class="fas fa-file-invoice"></i> Payroll
                     </a>
                 </li>
                 <li class="nav-item">
                     <a class="nav-link <?php echo $active_tab == 'salary_sheet' ? 'active' : ''; ?>" href="?tab=salary_sheet">
-                        <i class="fas fa-file-invoice"></i> Salary Sheet
+                        <i class="fas fa-chart-line"></i> Salary Sheet
                     </a>
                 </li>
             </ul>
             
             <!-- Employees Tab -->
             <?php if($active_tab == 'employees'): ?>
-            <div class="row mt-3">
-                <div class="col-md-4 no-print">
-                    <div class="card form-sticky">
-                        <div class="card-header <?php echo $edit_employee ? 'bg-warning' : 'bg-primary'; ?> text-white">
-                            <h5>
-                                <i class="fas <?php echo $edit_employee ? 'fa-edit' : 'fa-user-plus'; ?>"></i> 
-                                <?php echo $edit_employee ? 'Edit Employee' : 'Add New Employee'; ?>
-                            </h5>
-                        </div>
-                        <div class="card-body">
-                            <form method="POST">
-                                <?php if($edit_employee): ?>
-                                    <input type="hidden" name="emp_id" value="<?php echo $edit_employee['id']; ?>">
-                                <?php endif; ?>
-                                <div class="mb-3">
-                                    <label>Employee ID</label>
-                                    <input type="text" name="employee_id" class="form-control" 
-                                           value="<?php echo $edit_employee['employee_id'] ?? ''; ?>" 
-                                           placeholder="EMP-001" required>
-                                </div>
-                                <div class="mb-3">
-                                    <label>Full Name</label>
-                                    <input type="text" name="full_name" class="form-control" 
-                                           value="<?php echo $edit_employee['full_name'] ?? ''; ?>" required>
-                                </div>
-                                <div class="mb-3">
-                                    <label>Designation</label>
-                                    <input type="text" name="designation" class="form-control" 
-                                           value="<?php echo $edit_employee['designation'] ?? ''; ?>" required>
-                                </div>
-                                <div class="mb-3">
-                                    <label>Department</label>
-                                    <select name="department" class="form-control" required>
-                                        <option value="Management" <?php echo ($edit_employee && $edit_employee['department'] == 'Management') ? 'selected' : ''; ?>>Management</option>
-                                        <option value="Operations" <?php echo ($edit_employee && $edit_employee['department'] == 'Operations') ? 'selected' : ''; ?>>Operations</option>
-                                        <option value="Sales" <?php echo ($edit_employee && $edit_employee['department'] == 'Sales') ? 'selected' : ''; ?>>Sales</option>
-                                        <option value="Maintenance" <?php echo ($edit_employee && $edit_employee['department'] == 'Maintenance') ? 'selected' : ''; ?>>Maintenance</option>
-                                        <option value="Security" <?php echo ($edit_employee && $edit_employee['department'] == 'Security') ? 'selected' : ''; ?>>Security</option>
-                                    </select>
-                                </div>
-                                <div class="mb-3">
-                                    <label>Joining Date</label>
-                                    <input type="date" name="joining_date" class="form-control" 
-                                           value="<?php echo $edit_employee['joining_date'] ?? ''; ?>" required>
-                                </div>
-                                <div class="mb-3">
-                                    <label>Basic Salary (<?php echo $currency; ?>)</label>
-                                    <input type="number" name="basic_salary" class="form-control" step="0.01" 
-                                           value="<?php echo $edit_employee['basic_salary'] ?? ''; ?>" required>
-                                </div>
-                                <div class="mb-3">
-                                    <label>Phone</label>
-                                    <input type="text" name="phone" class="form-control" 
-                                           value="<?php echo $edit_employee['phone'] ?? ''; ?>">
-                                </div>
-                                <div class="mb-3">
-                                    <label>Address</label>
-                                    <textarea name="address" class="form-control" rows="2"><?php echo $edit_employee['address'] ?? ''; ?></textarea>
-                                </div>
-                                <div class="mb-3">
-                                    <label>Bank Account No</label>
-                                    <input type="text" name="bank_account_no" class="form-control" 
-                                           value="<?php echo $edit_employee['bank_account_no'] ?? ''; ?>">
-                                </div>
-                                <button type="submit" name="<?php echo $edit_employee ? 'update_employee' : 'save_employee'; ?>" class="btn btn-primary w-100">
-                                    <i class="fas fa-save"></i> <?php echo $edit_employee ? 'Update Employee' : 'Save Employee'; ?>
-                                </button>
-                                <?php if($edit_employee): ?>
-                                    <a href="?tab=employees" class="btn btn-secondary w-100 mt-2">
-                                        <i class="fas fa-plus"></i> Add New Employee
-                                    </a>
-                                <?php endif; ?>
-                            </form>
-                        </div>
-                    </div>
+            <div class="card">
+                <div class="card-header bg-primary text-white">
+                    <h5><i class="fas fa-list"></i> Employee List</h5>
                 </div>
-                
-                <div class="col-md-8">
-                    <div class="card">
-                        <div class="card-header bg-info text-white d-flex justify-content-between align-items-center">
-                            <h5><i class="fas fa-list"></i> Employee List</h5>
-                            <button onclick="printEmployeeList()" class="btn btn-light btn-sm">
-                                <i class="fas fa-print"></i> Print List
-                            </button>
-                        </div>
-                        <div class="card-body">
-                            <div class="table-responsive">
-                                <table class="table table-bordered" id="employeesTable">
-                                    <thead class="table-dark">
-                                        <tr>
-                                            <th>ID</th>
-                                            <th>Name</th>
-                                            <th>Designation</th>
-                                            <th>Department</th>
-                                            <th class="text-end">Basic Salary</th>
-                                            <th>Phone</th>
-                                            <th class="no-print">Actions</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody>
-                                        <?php foreach($employees as $emp): ?>
-                                        <tr>
-                                            <td><?php echo $emp['employee_id']; ?></td>
-                                            <td><strong><?php echo $emp['full_name']; ?></strong></td>
-                                            <td><?php echo $emp['designation']; ?></td>
-                                            <td><?php echo $emp['department']; ?></td>
-                                            <td class="text-end"><?php echo $currency; ?> <?php echo number_format($emp['basic_salary'], 2); ?></td>
-                                            <td><?php echo $emp['phone']; ?></td>
-                                            <td class="no-print">
-                                                <a href="?tab=employees&edit_id=<?php echo $emp['id']; ?>" class="btn btn-sm btn-warning">
-                                                    <i class="fas fa-edit"></i> Edit
-                                                </a>
-                                                <a href="?delete_id=<?php echo $emp['id']; ?>&tab=employees" class="btn btn-sm btn-danger" 
-                                                   onclick="return confirm('Delete this employee?')">
-                                                    <i class="fas fa-trash"></i> Delete
-                                                </a>
-                                            </td>
-                                        </tr>
-                                        <?php endforeach; ?>
-                                    </tbody>
-                                    <tfoot class="table-light">
-                                        <tr class="fw-bold">
-                                            <td colspan="4" class="text-end">TOTAL:</td>
-                                            <td class="text-end"><?php echo $currency; ?> <?php echo number_format(array_sum(array_column($employees, 'basic_salary')), 2); ?></td>
-                                            <td colspan="2"></td>
-                                        </tr>
-                                    </tfoot>
-                                </table>
-                            </div>
+                <div class="card-body">
+                    <div class="table-responsive">
+                        <table class="table table-bordered" id="employeesTable">
+                            <thead class="table-dark">
+                                <tr>
+                                    <th>ID</th>
+                                    <th>Employee Code</th>
+                                    <th>Full Name</th>
+                                    <th>Designation</th>
+                                    <th>Department</th>
+                                    <th>Basic Salary</th>
+                                    <th>Phone</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <?php foreach($employees as $emp): ?>
+                                <tr>
+                                    <td><?php echo $emp['id']; ?></td>
+                                    <td><?php echo $emp['employee_id']; ?></div>
+                                    <td><strong><?php echo htmlspecialchars($emp['full_name']); ?></strong></div>
+                                    <td><?php echo htmlspecialchars($emp['designation']); ?></div>
+                                    <td><?php echo htmlspecialchars($emp['department']); ?></div>
+                                    <td><?php echo $currency; ?> <?php echo number_format($emp['basic_salary'], 2); ?></div>
+                                    <td><?php echo htmlspecialchars($emp['phone']); ?></div>
+                                    <td>
+                                        <button class="btn btn-sm btn-warning" onclick="editEmployee(
+                                            <?php echo $emp['id']; ?>,
+                                            '<?php echo addslashes($emp['employee_id']); ?>',
+                                            '<?php echo addslashes($emp['full_name']); ?>',
+                                            '<?php echo addslashes($emp['designation']); ?>',
+                                            '<?php echo addslashes($emp['department']); ?>',
+                                            '<?php echo $emp['joining_date']; ?>',
+                                            <?php echo $emp['basic_salary']; ?>,
+                                            '<?php echo addslashes($emp['phone']); ?>',
+                                            '<?php echo addslashes($emp['address']); ?>',
+                                            '<?php echo addslashes($emp['bank_account_no']); ?>'
+                                        )">
+                                            <i class="fas fa-edit"></i> Edit
+                                        </button>
+                                        <a href="?delete_id=<?php echo $emp['id']; ?>&tab=employees" class="btn btn-sm btn-danger" onclick="return confirm('Deactivate this employee?')">
+                                            <i class="fas fa-trash"></i> Delete
+                                        </a>
+                                    </div>
+                                 </tr
+                                <?php endforeach; ?>
+                            </tbody>
                         </div>
                     </div>
                 </div>
@@ -427,63 +379,97 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
             
             <!-- Attendance Tab -->
             <?php if($active_tab == 'attendance'): ?>
-            <div class="mt-3">
-                <div class="card">
-                    <div class="card-header bg-success text-white">
-                        <h5><i class="fas fa-calendar-check"></i> Daily Attendance</h5>
+            <div class="row">
+                <div class="col-md-4">
+                    <div class="card">
+                        <div class="card-header bg-info text-white">
+                            <h5><i class="fas fa-clock"></i> Mark Attendance</h5>
+                        </div>
+                        <div class="card-body">
+                            <form method="POST">
+                                <div class="mb-3">
+                                    <label>Select Employee</label>
+                                    <select name="employee_id" class="form-control" required>
+                                        <option value="">-- Select Employee --</option>
+                                        <?php foreach($employees as $emp): ?>
+                                            <option value="<?php echo $emp['id']; ?>"><?php echo $emp['employee_id']; ?> - <?php echo $emp['full_name']; ?></option>
+                                        <?php endforeach; ?>
+                                    </select>
+                                </div>
+                                <div class="mb-3">
+                                    <label>Date</label>
+                                    <input type="date" name="attendance_date" class="form-control" value="<?php echo date('Y-m-d'); ?>" required>
+                                </div>
+                                <div class="row">
+                                    <div class="col-md-6">
+                                        <label>Check In Time</label>
+                                        <input type="time" name="check_in_time" class="form-control" value="09:00">
+                                    </div>
+                                    <div class="col-md-6">
+                                        <label>Check Out Time</label>
+                                        <input type="time" name="check_out_time" class="form-control" value="17:00">
+                                    </div>
+                                </div>
+                                <div class="mt-3">
+                                    <label>Status</label>
+                                    <select name="status" class="form-control" required>
+                                        <option value="present">Present</option>
+                                        <option value="absent">Absent</option>
+                                        <option value="late">Late</option>
+                                        <option value="half_day">Half Day</option>
+                                    </select>
+                                </div>
+                                <div class="mt-3">
+                                    <label>Overtime Hours</label>
+                                    <input type="number" name="overtime_hours" class="form-control" step="0.5" value="0">
+                                </div>
+                                <button type="submit" name="save_attendance" class="btn btn-info w-100 mt-3">
+                                    <i class="fas fa-save"></i> Save Attendance
+                                </button>
+                            </form>
+                        </div>
                     </div>
-                    <div class="card-body">
-                        <form method="GET" class="mb-3">
-                            <div class="row">
-                                <div class="col-md-3">
-                                    <label>Attendance Date</label>
-                                    <input type="date" name="attendance_date" class="form-control" value="<?php echo $attendance_date; ?>">
-                                </div>
-                                <div class="col-md-2">
-                                    <label>&nbsp;</label>
-                                    <button type="submit" class="btn btn-primary form-control">Load Date</button>
-                                </div>
-                            </div>
-                        </form>
-                        
-                        <form method="POST">
-                            <input type="hidden" name="attendance_date" value="<?php echo $attendance_date; ?>">
+                </div>
+                
+                <div class="col-md-8">
+                    <div class="card">
+                        <div class="card-header bg-success text-white">
+                            <h5><i class="fas fa-history"></i> Attendance History</h5>
+                        </div>
+                        <div class="card-body">
                             <div class="table-responsive">
-                                <table class="table table-bordered">
+                                <table class="table table-bordered" id="attendanceTable">
                                     <thead class="table-dark">
                                         <tr>
+                                            <th>Date</th>
                                             <th>Employee</th>
+                                            <th>Designation</th>
                                             <th>Check In</th>
                                             <th>Check Out</th>
                                             <th>Status</th>
-                                            <th>Overtime (Hours)</th>
+                                            <th>OT Hours</th>
                                         </tr>
                                     </thead>
                                     <tbody>
-                                        <?php foreach($employees as $emp): ?>
-                                        <?php $att = $attendance_map[$emp['id']] ?? null; ?>
+                                        <?php foreach($attendance as $att): ?>
                                         <tr>
-                                            <td><strong><?php echo $emp['full_name']; ?></strong><br><small><?php echo $emp['designation']; ?></small></td>
-                                            <td><input type="time" name="attendance[<?php echo $emp['id']; ?>][check_in]" class="form-control" value="<?php echo $att['check_in_time'] ?? '09:00'; ?>"></td>
-                                            <td><input type="time" name="attendance[<?php echo $emp['id']; ?>][check_out]" class="form-control" value="<?php echo $att['check_out_time'] ?? '17:00'; ?>"></td>
+                                            <td><?php echo date('d-m-Y', strtotime($att['attendance_date'])); ?></div>
+                                            <td><?php echo htmlspecialchars($att['full_name']); ?></div>
+                                            <td><?php echo htmlspecialchars($att['designation']); ?></div>
+                                            <td><?php echo $att['check_in_time']; ?></div>
+                                            <td><?php echo $att['check_out_time']; ?></div>
                                             <td>
-                                                <select name="attendance[<?php echo $emp['id']; ?>][status]" class="form-control">
-                                                    <option value="present" <?php echo ($att['status'] ?? '') == 'present' ? 'selected' : ''; ?>>Present</option>
-                                                    <option value="absent" <?php echo ($att['status'] ?? '') == 'absent' ? 'selected' : ''; ?>>Absent</option>
-                                                    <option value="late" <?php echo ($att['status'] ?? '') == 'late' ? 'selected' : ''; ?>>Late</option>
-                                                    <option value="half_day" <?php echo ($att['status'] ?? '') == 'half_day' ? 'selected' : ''; ?>>Half Day</option>
-                                                </select>
-                                            </td>
-                                            <td><input type="number" name="attendance[<?php echo $emp['id']; ?>][overtime]" class="form-control" step="0.5" value="<?php echo $att['overtime_hours'] ?? 0; ?>"></td>
-                                        </tr>
+                                                <span class="badge bg-<?php echo $att['status'] == 'present' ? 'success' : ($att['status'] == 'absent' ? 'danger' : 'warning'); ?>">
+                                                    <?php echo ucfirst($att['status']); ?>
+                                                </span>
+                                            </div>
+                                            <td><?php echo $att['overtime_hours']; ?></div>
+                                         </tr
                                         <?php endforeach; ?>
                                     </tbody>
-                                </table>
+                                </div>
                             </div>
-                            <button type="submit" name="save_attendance" class="btn btn-success">
-                                <i class="fas fa-save"></i> Save Attendance
-                            </button>
-                        </form>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -491,81 +477,85 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
             
             <!-- Payroll Tab -->
             <?php if($active_tab == 'payroll'): ?>
-            <div class="mt-3">
-                <div class="card">
-                    <div class="card-header bg-warning text-dark">
-                        <h5><i class="fas fa-calculator"></i> Generate Monthly Payroll</h5>
-                    </div>
-                    <div class="card-body">
-                        <form method="POST" class="mb-4">
-                            <div class="row">
-                                <div class="col-md-3">
-                                    <label>Select Month</label>
+            <div class="row">
+                <div class="col-md-5">
+                    <div class="card">
+                        <div class="card-header bg-warning text-dark">
+                            <h5><i class="fas fa-calculator"></i> Generate Payroll</h5>
+                        </div>
+                        <div class="card-body">
+                            <form method="POST">
+                                <div class="mb-3">
+                                    <label>Select Employee</label>
+                                    <select name="employee_id" class="form-control" required>
+                                        <option value="">-- Select Employee --</option>
+                                        <?php foreach($employees as $emp): ?>
+                                            <option value="<?php echo $emp['id']; ?>"><?php echo $emp['employee_id']; ?> - <?php echo $emp['full_name']; ?></option>
+                                        <?php endforeach; ?>
+                                    </select>
+                                </div>
+                                <div class="mb-3">
+                                    <label>Month & Year</label>
                                     <input type="month" name="month_year" class="form-control" value="<?php echo date('Y-m'); ?>" required>
                                 </div>
-                                <div class="col-md-2">
-                                    <label>&nbsp;</label>
-                                    <button type="submit" name="generate_payroll" class="btn btn-warning form-control">
-                                        <i class="fas fa-sync-alt"></i> Generate Payroll
-                                    </button>
+                                <button type="submit" name="generate_payroll" class="btn btn-warning w-100">
+                                    <i class="fas fa-calculator"></i> Generate Payroll
+                                </button>
+                            </form>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="col-md-7">
+                    <div class="card">
+                        <div class="card-header bg-primary text-white">
+                            <h5><i class="fas fa-list"></i> Payroll List</h5>
+                        </div>
+                        <div class="card-body">
+                            <div class="table-responsive">
+                                <table class="table table-bordered" id="payrollTable">
+                                    <thead class="table-dark">
+                                        <tr>
+                                            <th>Month</th>
+                                            <th>Employee</th>
+                                            <th>Basic</th>
+                                            <th>Allowances</th>
+                                            <th>OT Amount</th>
+                                            <th>Deductions</th>
+                                            <th>Net Salary</th>
+                                            <th>Status</th>
+                                            <th>Actions</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <?php foreach($payroll as $p): ?>
+                                        <tr>
+                                            <td><?php echo date('F Y', strtotime($p['month_year'] . '-01')); ?></div>
+                                            <td><?php echo htmlspecialchars($p['full_name']); ?><br><small><?php echo $p['employee_id']; ?></small></div>
+                                            <td><?php echo $currency; ?> <?php echo number_format($p['basic_salary'], 2); ?></div>
+                                            <td><?php echo $currency; ?> <?php echo number_format($p['allowances'], 2); ?></div>
+                                            <td><?php echo $currency; ?> <?php echo number_format($p['overtime_amount'], 2); ?></div>
+                                            <td><?php echo $currency; ?> <?php echo number_format($p['deductions'], 2); ?></div>
+                                            <td class="fw-bold"><?php echo $currency; ?> <?php echo number_format($p['net_salary'], 2); ?></div>
+                                            <td>
+                                                <?php if($p['status'] == 'paid'): ?>
+                                                    <span class="badge bg-success">Paid</span>
+                                                <?php else: ?>
+                                                    <span class="badge bg-warning">Pending</span>
+                                                <?php endif; ?>
+                                            </div>
+                                            <td>
+                                                <?php if($p['status'] == 'pending'): ?>
+                                                    <button class="btn btn-sm btn-success" onclick="paySalary(<?php echo $p['id']; ?>, '<?php echo $p['full_name']; ?>', <?php echo $p['net_salary']; ?>)">
+                                                        <i class="fas fa-money-bill"></i> Pay
+                                                    </button>
+                                                <?php endif; ?>
+                                            </div>
+                                         </tr
+                                        <?php endforeach; ?>
+                                    </tbody>
                                 </div>
                             </div>
-                        </form>
-                        
-                        <hr>
-                        
-                        <div class="table-responsive">
-                            <table class="table table-bordered" id="payrollTable">
-                                <thead class="table-dark">
-                                    <tr>
-                                        <th>Month</th>
-                                        <th>Employee</th>
-                                        <th class="text-end">Basic</th>
-                                        <th class="text-end">Allowances</th>
-                                        <th class="text-end">Overtime</th>
-                                        <th class="text-end">Bonus</th>
-                                        <th class="text-end">Deductions</th>
-                                        <th class="text-end">Net Salary</th>
-                                        <th>Status</th>
-                                        <th class="no-print">Action</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    <?php if(empty($payroll_list)): ?>
-                                    <tr>
-                                        <td colspan="10" class="text-center">No payroll records found. Generate payroll for a month.</td>
-                                    </tr>
-                                    <?php else: ?>
-                                        <?php foreach($payroll_list as $pay): ?>
-                                        <tr>
-                                            <td><?php echo date('F Y', strtotime($pay['month_year'] . '-01')); ?></td>
-                                            <td><strong><?php echo $pay['full_name']; ?></strong><br><small><?php echo $pay['designation']; ?></small></td>
-                                            <td class="text-end"><?php echo $currency; ?> <?php echo number_format($pay['basic_salary'], 2); ?></td>
-                                            <td class="text-end"><?php echo $currency; ?> <?php echo number_format($pay['allowances'], 2); ?></td>
-                                            <td class="text-end"><?php echo $currency; ?> <?php echo number_format($pay['overtime_amount'], 2); ?></td>
-                                            <td class="text-end"><?php echo $currency; ?> <?php echo number_format($pay['bonus'], 2); ?></td>
-                                            <td class="text-end"><?php echo $currency; ?> <?php echo number_format($pay['deductions'], 2); ?></td>
-                                            <td class="text-end"><strong><?php echo $currency; ?> <?php echo number_format($pay['net_salary'], 2); ?></strong></td>
-                                            <td>
-                                                <span class="badge bg-<?php echo $pay['status'] == 'paid' ? 'success' : 'warning'; ?>">
-                                                    <?php echo ucfirst($pay['status']); ?>
-                                                </span>
-                                            </td>
-                                            <td class="no-print">
-                                                <a href="view_payslip.php?id=<?php echo $pay['id']; ?>" class="btn btn-sm btn-info" target="_blank">
-                                                    <i class="fas fa-eye"></i> View
-                                                </a>
-                                                <?php if($pay['status'] == 'pending'): ?>
-                                                    <a href="?mark_paid=<?php echo $pay['id']; ?>&tab=payroll" class="btn btn-sm btn-success">
-                                                        <i class="fas fa-check"></i> Mark Paid
-                                                    </a>
-                                                <?php endif; ?>
-                                            </td>
-                                        </tr>
-                                        <?php endforeach; ?>
-                                    <?php endif; ?>
-                                </tbody>
-                            </table>
                         </div>
                     </div>
                 </div>
@@ -574,30 +564,230 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
             
             <!-- Salary Sheet Tab -->
             <?php if($active_tab == 'salary_sheet'): ?>
-            <div class="mt-3">
-                <div class="card">
-                    <div class="card-header bg-danger text-white">
-                        <h5><i class="fas fa-file-invoice-dollar"></i> Salary Sheet Report</h5>
-                    </div>
-                    <div class="card-body">
-                        <form target="_blank" action="salary_sheet_report.php" method="GET">
-                            <div class="row">
-                                <div class="col-md-3">
-                                    <label>Select Month</label>
-                                    <input type="month" name="month_year" class="form-control" value="<?php echo date('Y-m'); ?>" required>
-                                </div>
-                                <div class="col-md-2">
-                                    <label>&nbsp;</label>
-                                    <button type="submit" class="btn btn-danger form-control">
-                                        <i class="fas fa-print"></i> Generate Report
-                                    </button>
-                                </div>
-                            </div>
-                        </form>
+            <div class="card">
+                <div class="card-header bg-success text-white">
+                    <h5><i class="fas fa-chart-line"></i> Salary Sheet Summary</h5>
+                </div>
+                <div class="card-body">
+                    <div class="table-responsive">
+                        <table class="table table-bordered" id="salarySheetTable">
+                            <thead class="table-dark">
+                                <tr>
+                                    <th>Employee Code</th>
+                                    <th>Employee Name</th>
+                                    <th>Designation</th>
+                                    <th>Basic Salary</th>
+                                    <th>Allowances (20%)</th>
+                                    <th>OT Amount</th>
+                                    <th>Deductions (10%)</th>
+                                    <th>Net Salary</th>
+                                    <th>Last Payment</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <?php 
+                                foreach($employees as $emp):
+                                // Get latest payroll
+                                $stmt = $pdo->prepare("SELECT * FROM payroll WHERE employee_id = ? ORDER BY month_year DESC LIMIT 1");
+                                $stmt->execute([$emp['id']]);
+                                $latest = $stmt->fetch();
+                                ?>
+                                <tr>
+                                    <td><?php echo $emp['employee_id']; ?></div>
+                                    <td><strong><?php echo htmlspecialchars($emp['full_name']); ?></strong></div>
+                                    <td><?php echo htmlspecialchars($emp['designation']); ?></div>
+                                    <td><?php echo $currency; ?> <?php echo number_format($emp['basic_salary'], 2); ?></div>
+                                    <td><?php echo $currency; ?> <?php echo number_format($emp['basic_salary'] * 0.2, 2); ?></div>
+                                    <td><?php echo $currency; ?> <?php echo number_format($latest['overtime_amount'] ?? 0, 2); ?></div>
+                                    <td><?php echo $currency; ?> <?php echo number_format($emp['basic_salary'] * 0.1, 2); ?></div>
+                                    <td class="fw-bold"><?php echo $currency; ?> <?php echo number_format($latest['net_salary'] ?? $emp['basic_salary'] * 1.1, 2); ?></div>
+                                    <td><?php echo $latest && $latest['payment_date'] ? date('d-m-Y', strtotime($latest['payment_date'])) : 'Not paid yet'; ?></div>
+                                 </tr
+                                <?php endforeach; ?>
+                            </tbody>
+                            <tfoot class="table-light">
+                                <tr class="fw-bold">
+                                    <td colspan="7" class="text-end">TOTAL MONTHLY SALARY: </div>
+                                    <td colspan="2"><?php echo $currency; ?> <?php echo number_format(array_sum(array_column($employees, 'basic_salary')) * 1.1, 2); ?></div>
+                                 </tr
+                            </tfoot>
+                        </div>
                     </div>
                 </div>
             </div>
             <?php endif; ?>
+        </div>
+    </div>
+    
+    <!-- Add Employee Modal -->
+    <div class="modal fade" id="addEmployeeModal" tabindex="-1">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header bg-primary text-white">
+                    <h5><i class="fas fa-user-plus"></i> Add New Employee</h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <form method="POST">
+                    <div class="modal-body">
+                        <div class="row">
+                            <div class="col-md-6">
+                                <label>Employee ID *</label>
+                                <input type="text" name="employee_id" class="form-control" placeholder="EMP-001" required>
+                            </div>
+                            <div class="col-md-6">
+                                <label>Full Name *</label>
+                                <input type="text" name="full_name" class="form-control" required>
+                            </div>
+                        </div>
+                        <div class="row mt-2">
+                            <div class="col-md-6">
+                                <label>Designation</label>
+                                <input type="text" name="designation" class="form-control" placeholder="Manager, Cashier, etc.">
+                            </div>
+                            <div class="col-md-6">
+                                <label>Department</label>
+                                <select name="department" class="form-control">
+                                    <option value="">Select Department</option>
+                                    <option value="Management">Management</option>
+                                    <option value="Operations">Operations</option>
+                                    <option value="Sales">Sales</option>
+                                    <option value="Accounts">Accounts</option>
+                                    <option value="HR">HR</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="row mt-2">
+                            <div class="col-md-6">
+                                <label>Joining Date</label>
+                                <input type="date" name="joining_date" class="form-control">
+                            </div>
+                            <div class="col-md-6">
+                                <label>Basic Salary (<?php echo $currency; ?>) *</label>
+                                <input type="number" name="basic_salary" class="form-control" step="0.01" required>
+                            </div>
+                        </div>
+                        <div class="row mt-2">
+                            <div class="col-md-6">
+                                <label>Phone</label>
+                                <input type="text" name="phone" class="form-control">
+                            </div>
+                            <div class="col-md-6">
+                                <label>Bank Account No</label>
+                                <input type="text" name="bank_account_no" class="form-control">
+                            </div>
+                        </div>
+                        <div class="mt-2">
+                            <label>Address</label>
+                            <textarea name="address" class="form-control" rows="2"></textarea>
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                        <button type="submit" name="save_employee" class="btn btn-primary">Save Employee</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Edit Employee Modal -->
+    <div class="modal fade" id="editEmployeeModal" tabindex="-1">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header bg-warning text-white">
+                    <h5><i class="fas fa-edit"></i> Edit Employee</h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <form method="POST">
+                    <input type="hidden" name="employee_id" id="edit_id">
+                    <div class="modal-body">
+                        <div class="row">
+                            <div class="col-md-6">
+                                <label>Employee ID *</label>
+                                <input type="text" name="emp_id" id="edit_emp_id" class="form-control" required>
+                            </div>
+                            <div class="col-md-6">
+                                <label>Full Name *</label>
+                                <input type="text" name="full_name" id="edit_full_name" class="form-control" required>
+                            </div>
+                        </div>
+                        <div class="row mt-2">
+                            <div class="col-md-6">
+                                <label>Designation</label>
+                                <input type="text" name="designation" id="edit_designation" class="form-control">
+                            </div>
+                            <div class="col-md-6">
+                                <label>Department</label>
+                                <input type="text" name="department" id="edit_department" class="form-control">
+                            </div>
+                        </div>
+                        <div class="row mt-2">
+                            <div class="col-md-6">
+                                <label>Joining Date</label>
+                                <input type="date" name="joining_date" id="edit_joining_date" class="form-control">
+                            </div>
+                            <div class="col-md-6">
+                                <label>Basic Salary (<?php echo $currency; ?>) *</label>
+                                <input type="number" name="basic_salary" id="edit_basic_salary" class="form-control" step="0.01" required>
+                            </div>
+                        </div>
+                        <div class="row mt-2">
+                            <div class="col-md-6">
+                                <label>Phone</label>
+                                <input type="text" name="phone" id="edit_phone" class="form-control">
+                            </div>
+                            <div class="col-md-6">
+                                <label>Bank Account No</label>
+                                <input type="text" name="bank_account_no" id="edit_bank_account" class="form-control">
+                            </div>
+                        </div>
+                        <div class="mt-2">
+                            <label>Address</label>
+                            <textarea name="address" id="edit_address" class="form-control" rows="2"></textarea>
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                        <button type="submit" name="update_employee" class="btn btn-warning">Update Employee</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Pay Salary Modal -->
+    <div class="modal fade" id="paySalaryModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header bg-success text-white">
+                    <h5><i class="fas fa-money-bill"></i> Pay Salary</h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <form method="POST">
+                    <input type="hidden" name="payroll_id" id="payroll_id">
+                    <div class="modal-body">
+                        <div class="mb-3">
+                            <label>Employee</label>
+                            <input type="text" id="pay_employee_name" class="form-control" readonly>
+                        </div>
+                        <div class="mb-3">
+                            <label>Salary Amount (<?php echo $currency; ?>)</label>
+                            <input type="text" id="pay_amount" class="form-control" readonly>
+                        </div>
+                        <div class="mb-3">
+                            <label>Payment Date</label>
+                            <input type="date" name="payment_date" class="form-control" value="<?php echo date('Y-m-d'); ?>" required>
+                        </div>
+                        <div class="alert alert-info">
+                            <i class="fas fa-info-circle"></i> This will mark the salary as paid and create an accounting entry.
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                        <button type="submit" name="pay_salary" class="btn btn-success">Confirm Payment</button>
+                    </div>
+                </form>
+            </div>
         </div>
     </div>
     
@@ -606,7 +796,7 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
     <script src="https://cdn.datatables.net/1.11.5/js/jquery.dataTables.min.js"></script>
     <script>
         $(document).ready(function() {
-            $('#employeesTable, #payrollTable').DataTable({
+            $('#employeesTable, #attendanceTable, #payrollTable, #salarySheetTable').DataTable({
                 order: [[0, 'asc']],
                 pageLength: 25,
                 language: {
@@ -617,8 +807,25 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
             });
         });
         
-        function printEmployeeList() {
-            window.print();
+        function editEmployee(id, empId, name, designation, department, joiningDate, salary, phone, address, bankAccount) {
+            document.getElementById('edit_id').value = id;
+            document.getElementById('edit_emp_id').value = empId;
+            document.getElementById('edit_full_name').value = name;
+            document.getElementById('edit_designation').value = designation;
+            document.getElementById('edit_department').value = department;
+            document.getElementById('edit_joining_date').value = joiningDate;
+            document.getElementById('edit_basic_salary').value = salary;
+            document.getElementById('edit_phone').value = phone;
+            document.getElementById('edit_address').value = address;
+            document.getElementById('edit_bank_account').value = bankAccount;
+            new bootstrap.Modal(document.getElementById('editEmployeeModal')).show();
+        }
+        
+        function paySalary(id, name, amount) {
+            document.getElementById('payroll_id').value = id;
+            document.getElementById('pay_employee_name').value = name;
+            document.getElementById('pay_amount').value = amount.toFixed(2);
+            new bootstrap.Modal(document.getElementById('paySalaryModal')).show();
         }
     </script>
 </body>
