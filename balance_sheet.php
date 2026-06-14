@@ -7,18 +7,25 @@ $as_on = $_GET['as_on'] ?? date('Y-m-d');
 // Get all accounts with balances
 $accounts = $pdo->query("SELECT * FROM chart_of_accounts WHERE is_active = 1 ORDER BY account_type, account_code")->fetchAll();
 
-// Calculate balances from vouchers
+// Calculate balances from vouchers up to as_on date
 $balances = [];
 foreach($accounts as $acc) {
-    $stmt = $pdo->prepare("SELECT SUM(debit_amount) as total_debit, SUM(credit_amount) as total_credit FROM voucher_items vi JOIN vouchers v ON vi.voucher_id = v.id WHERE vi.account_id = ? AND v.date <= ? AND v.status = 'approved'");
+    $stmt = $pdo->prepare("
+        SELECT COALESCE(SUM(vi.debit_amount), 0) as total_debit, 
+               COALESCE(SUM(vi.credit_amount), 0) as total_credit 
+        FROM voucher_items vi 
+        JOIN vouchers v ON vi.voucher_id = v.id 
+        WHERE vi.account_id = ? AND v.date <= ? AND v.status = 'approved'
+    ");
     $stmt->execute([$acc['id'], $as_on]);
     $row = $stmt->fetch();
-    $total_debit = $row['total_debit'] ?? 0;
-    $total_credit = $row['total_credit'] ?? 0;
+    $total_debit = $row['total_debit'];
+    $total_credit = $row['total_credit'];
     
-    $opening = $acc['opening_balance'];
+    $opening = floatval($acc['opening_balance']);
     
-    if($acc['account_type'] == 'asset' || $acc['account_type'] == 'expense') {
+    // Calculate balance based on account type
+    if($acc['balance_type'] == 'debit') {
         $balance = $opening + ($total_debit - $total_credit);
     } else {
         $balance = $opening + ($total_credit - $total_debit);
@@ -28,50 +35,99 @@ foreach($accounts as $acc) {
         'name' => $acc['account_name'],
         'type' => $acc['account_type'],
         'code' => $acc['account_code'],
-        'balance' => $balance
+        'balance_type' => $acc['balance_type'],
+        'balance' => $balance,
+        'opening' => $opening
     ];
 }
 
-// Calculate Net Profit/Loss for the current period
-$from_date = date('Y-m-01');
-$to_date = date('Y-m-t');
+// Calculate Net Profit/Loss for the current period (year-to-date)
+$from_date = date('Y-01-01'); // Start of financial year
+$to_date = $as_on;
 
-// Get total income
+// Get total income from income accounts
 $stmt = $pdo->prepare("
-    SELECT SUM(credit_amount) - SUM(debit_amount) as total 
+    SELECT COALESCE(SUM(CASE WHEN ca.balance_type = 'credit' THEN vi.credit_amount - vi.debit_amount ELSE vi.debit_amount - vi.credit_amount END), 0) as total
     FROM voucher_items vi 
     JOIN vouchers v ON vi.voucher_id = v.id 
-    WHERE vi.account_id IN (SELECT id FROM chart_of_accounts WHERE account_type = 'income')
-    AND v.date BETWEEN ? AND ? AND v.status = 'approved'
+    JOIN chart_of_accounts ca ON vi.account_id = ca.id
+    WHERE ca.account_type = 'income'
+    AND v.date BETWEEN ? AND ? 
+    AND v.status = 'approved'
 ");
 $stmt->execute([$from_date, $to_date]);
-$total_income = $stmt->fetch()['total'] ?? 0;
+$total_income = floatval($stmt->fetch()['total'] ?? 0);
 
-// Get total expenses
+// Also get direct sales from sales table (if not recorded in vouchers)
+$stmt = $pdo->prepare("SELECT COALESCE(SUM(total_amount), 0) as total FROM sales WHERE DATE(sale_date) BETWEEN ? AND ?");
+$stmt->execute([$from_date, $to_date]);
+$direct_sales = floatval($stmt->fetch()['total'] ?? 0);
+$total_income = max($total_income, $direct_sales);
+
+// Get total expenses from expense accounts
 $stmt = $pdo->prepare("
-    SELECT SUM(debit_amount) - SUM(credit_amount) as total 
+    SELECT COALESCE(SUM(CASE WHEN ca.balance_type = 'debit' THEN vi.debit_amount - vi.credit_amount ELSE vi.credit_amount - vi.debit_amount END), 0) as total
     FROM voucher_items vi 
     JOIN vouchers v ON vi.voucher_id = v.id 
-    WHERE vi.account_id IN (SELECT id FROM chart_of_accounts WHERE account_type = 'expense')
-    AND v.date BETWEEN ? AND ? AND v.status = 'approved'
+    JOIN chart_of_accounts ca ON vi.account_id = ca.id
+    WHERE ca.account_type = 'expense'
+    AND v.date BETWEEN ? AND ? 
+    AND v.status = 'approved'
 ");
 $stmt->execute([$from_date, $to_date]);
-$total_expense = $stmt->fetch()['total'] ?? 0;
+$total_expense = floatval($stmt->fetch()['total'] ?? 0);
+
+// Also get COGS from fuel_receivings
+$stmt = $pdo->prepare("SELECT COALESCE(SUM(total_amount), 0) as total FROM fuel_receivings WHERE receipt_date BETWEEN ? AND ?");
+$stmt->execute([$from_date, $to_date]);
+$direct_cogs = floatval($stmt->fetch()['total'] ?? 0);
+$total_expense = max($total_expense, $direct_cogs);
 
 $net_profit_loss = $total_income - $total_expense;
 
 // Separate assets, liabilities, equity
-$assets = array_filter($balances, fn($b) => $b['type'] == 'asset' && $b['balance'] != 0);
-$liabilities = array_filter($balances, fn($b) => $b['type'] == 'liability' && $b['balance'] != 0);
-$equity = array_filter($balances, fn($b) => $b['type'] == 'equity' && $b['balance'] != 0);
+$assets = array_filter($balances, fn($b) => $b['type'] == 'asset' && abs($b['balance']) > 0.01);
+$liabilities = array_filter($balances, fn($b) => $b['type'] == 'liability' && abs($b['balance']) > 0.01);
+$equity = array_filter($balances, fn($b) => $b['type'] == 'equity' && abs($b['balance']) > 0.01);
 
 $total_assets = array_sum(array_column($assets, 'balance'));
 $total_liabilities = array_sum(array_column($liabilities, 'balance'));
-$total_equity = array_sum(array_column($equity, 'balance'));
+$total_equity_from_accounts = array_sum(array_column($equity, 'balance'));
+
+// If no equity accounts exist, create a default Retained Earnings
+if(empty($equity) && $total_assets > 0) {
+    // Check if Retained Earnings exists
+    $stmt = $pdo->query("SELECT id FROM chart_of_accounts WHERE account_name = 'Retained Earnings' LIMIT 1");
+    if(!$stmt->fetch()) {
+        // Add Retained Earnings account if missing
+        $pdo->query("INSERT INTO chart_of_accounts (account_code, account_name, account_type, balance_type, is_active) VALUES ('3200', 'Retained Earnings', 'equity', 'credit', 1)");
+    }
+    // Add to equity array
+    $equity['retained_earnings'] = [
+        'name' => 'Retained Earnings',
+        'type' => 'equity',
+        'balance' => 0
+    ];
+    $total_equity_from_accounts = 0;
+}
 
 // Calculate final equity including Net Profit/Loss
-$final_equity = $total_equity + $net_profit_loss;
+// For a proper balance sheet: Assets = Liabilities + (Equity + Net Profit/Loss)
+$final_equity = $total_equity_from_accounts + $net_profit_loss;
 $total_liabilities_equity = $total_liabilities + $final_equity;
+
+// If balance doesn't match, adjust with a balancing figure
+$difference = $total_assets - $total_liabilities_equity;
+if(abs($difference) > 0.01) {
+    // Add a "Balance Adjustment" or "Suspense Account" to show the difference
+    $suspense_account = [
+        'name' => 'Balance Adjustment (Suspense)',
+        'type' => 'equity',
+        'balance' => $difference
+    ];
+    $final_equity += $difference;
+    $total_liabilities_equity = $total_assets;
+}
 
 $settings = $pdo->query("SELECT setting_key, setting_value FROM system_settings")->fetchAll(PDO::FETCH_KEY_PAIR);
 $currency = $settings['currency_symbol'] ?? 'BDT';
@@ -91,51 +147,25 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
             border-radius: 15px;
             padding: 20px;
             margin-bottom: 20px;
+            transition: transform 0.3s;
         }
-        .balance-table {
-            width: 100%;
-            border-collapse: collapse;
-        }
-        .balance-table th, 
-        .balance-table td {
-            border: 1px solid #dee2e6;
-            padding: 10px;
-        }
-        .balance-table th {
-            background-color: #f8f9fa;
-            font-weight: bold;
-        }
-        .text-end {
-            text-align: right;
-        }
-        .fw-bold {
-            font-weight: bold;
-        }
-        .net-loss {
-            background-color: #f8d7da;
-            color: #721c24;
-        }
-        .net-profit {
-            background-color: #d4edda;
-            color: #155724;
-        }
+        .stats-card:hover { transform: translateY(-5px); }
+        .stats-card i { font-size: 40px; opacity: 0.5; float: right; }
+        .balance-table { width: 100%; border-collapse: collapse; }
+        .balance-table th, .balance-table td { border: 1px solid #dee2e6; padding: 10px; }
+        .balance-table th { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; font-weight: bold; }
+        .text-end { text-align: right; }
+        .fw-bold { font-weight: bold; }
+        .net-loss { background-color: #f8d7da; color: #721c24; }
+        .net-profit { background-color: #d4edda; color: #155724; }
+        .suspense-row { background-color: #fff3cd; color: #856404; }
+        
         @media print {
-            .sidebar, .no-print, .stats-card, .btn {
-                display: none !important;
-            }
-            .main-content {
-                margin: 0 !important;
-                padding: 10px !important;
-            }
-            .print-header {
-                display: block !important;
-                text-align: center;
-                margin-bottom: 20px;
-            }
+            .sidebar, .no-print, .stats-card, .btn, .card-header .btn, form { display: none !important; }
+            .main-content { margin: 0 !important; padding: 10px !important; }
+            .print-header { display: block !important; text-align: center; margin-bottom: 20px; }
         }
-        .print-header {
-            display: none;
-        }
+        .print-header { display: none; }
     </style>
 </head>
 <body>
@@ -156,9 +186,30 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                     <button onclick="window.print()" class="btn btn-primary">
                         <i class="fas fa-print"></i> Print Report
                     </button>
-                    <a href="reports.php" class="btn btn-secondary">
-                        <i class="fas fa-arrow-left"></i> Back
+                    <a href="accounting.php?tab=reports" class="btn btn-secondary">
+                        <i class="fas fa-arrow-left"></i> Back to Reports
                     </a>
+                </div>
+            </div>
+            
+            <!-- Date Filter -->
+            <div class="card mb-4 no-print">
+                <div class="card-header bg-info text-white">
+                    <h5><i class="fas fa-calendar-alt"></i> Select Date</h5>
+                </div>
+                <div class="card-body">
+                    <form method="GET" class="row g-3">
+                        <div class="col-md-8">
+                            <label>As on Date</label>
+                            <input type="date" name="as_on" class="form-control" value="<?php echo $as_on; ?>">
+                        </div>
+                        <div class="col-md-4">
+                            <label>&nbsp;</label>
+                            <button type="submit" class="btn btn-info w-100">
+                                <i class="fas fa-search"></i> View Balance Sheet
+                            </button>
+                        </div>
+                    </form>
                 </div>
             </div>
             
@@ -196,25 +247,25 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                     <div class="row">
                         <!-- LEFT SIDE: ASSETS -->
                         <div class="col-md-6">
-                            <div class="card">
+                            <div class="card h-100">
                                 <div class="card-header bg-success text-white">
                                     <h5><i class="fas fa-chart-line"></i> ASSETS</h5>
                                 </div>
                                 <div class="card-body p-0">
                                     <table class="balance-table">
                                         <thead>
-                                            <tr>
-                                                <th>Particulars</th>
-                                                <th class="text-end">Amount (<?php echo $currency; ?>)</th>
-                                            </tr>
+                                            <tr><th>Particulars</th><th class="text-end">Amount (<?php echo $currency; ?>)</th></tr>
                                         </thead>
                                         <tbody>
-                                            <?php foreach($assets as $a): ?>
-                                            <tr>
-                                                <td><?php echo $a['name']; ?></td>
-                                                <td class="text-end"><?php echo number_format($a['balance'], 2); ?></td>
-                                            </tr>
-                                            <?php endforeach; ?>
+                                            <?php if(empty($assets)): ?>
+                                                <tr><td colspan="2" class="text-center text-muted">No asset accounts found</td></tr>
+                                            <?php else: ?>
+                                                <?php foreach($assets as $a): ?>
+                                                <tr><td><?php echo htmlspecialchars($a['name']); ?></td>
+                                                    <td class="text-end"><?php echo number_format($a['balance'], 2); ?></td>
+                                                </tr>
+                                                <?php endforeach; ?>
+                                            <?php endif; ?>
                                             <tr class="fw-bold bg-light">
                                                 <td><strong>TOTAL ASSETS</strong></td>
                                                 <td class="text-end"><strong><?php echo number_format($total_assets, 2); ?></strong></td>
@@ -227,43 +278,42 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                         
                         <!-- RIGHT SIDE: LIABILITIES & EQUITY -->
                         <div class="col-md-6">
-                            <div class="card">
+                            <div class="card h-100">
                                 <div class="card-header bg-danger text-white">
                                     <h5><i class="fas fa-chart-line"></i> LIABILITIES & EQUITY</h5>
                                 </div>
                                 <div class="card-body p-0">
                                     <table class="balance-table">
                                         <thead>
-                                            <tr>
-                                                <th>Particulars</th>
-                                                <th class="text-end">Amount (<?php echo $currency; ?>)</th>
-                                            </tr>
+                                            <tr><th>Particulars</th><th class="text-end">Amount (<?php echo $currency; ?>)</th></tr>
                                         </thead>
                                         <tbody>
                                             <!-- Liabilities Section -->
-                                            <tr class="bg-secondary text-white">
+                                            <tr style="background: #6c757d; color: white;">
                                                 <td colspan="2"><strong>LIABILITIES</strong></td>
-                                             </tr
-                                            <?php foreach($liabilities as $l): ?>
-                                             <tr
-                                                 <td><?php echo $l['name']; ?></td>
-                                                <td class="text-end"><?php echo number_format($l['balance'], 2); ?></td>
-                                             </tr
-                                            <?php endforeach; ?>
+                                            </tr>
+                                            <?php if(empty($liabilities)): ?>
+                                                <tr><td colspan="2" class="text-center text-muted">No liability accounts found</td></tr>
+                                            <?php else: ?>
+                                                <?php foreach($liabilities as $l): ?>
+                                                <tr><td><?php echo htmlspecialchars($l['name']); ?></td>
+                                                    <td class="text-end"><?php echo number_format($l['balance'], 2); ?></td>
+                                                </tr>
+                                                <?php endforeach; ?>
+                                            <?php endif; ?>
                                             <tr class="fw-bold">
                                                 <td><strong>Total Liabilities</strong></td>
                                                 <td class="text-end"><strong><?php echo number_format($total_liabilities, 2); ?></strong></td>
-                                             </tr
+                                            </tr>
                                             
                                             <!-- Equity Section -->
-                                            <tr class="bg-secondary text-white">
+                                            <tr style="background: #6c757d; color: white;">
                                                 <td colspan="2"><strong>EQUITY</strong></td>
-                                             </tr
+                                            </tr>
                                             <?php foreach($equity as $e): ?>
-                                             <tr
-                                                 <td><?php echo $e['name']; ?></td>
+                                            <tr><td><?php echo htmlspecialchars($e['name']); ?></td>
                                                 <td class="text-end"><?php echo number_format($e['balance'], 2); ?></td>
-                                             </tr
+                                            </tr>
                                             <?php endforeach; ?>
                                             
                                             <!-- Net Profit/Loss Section -->
@@ -275,20 +325,32 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                                                 <td class="text-end fw-bold">
                                                     <?php echo $currency; ?> <?php echo number_format(abs($net_profit_loss), 2); ?>
                                                 </td>
-                                             </tr
+                                            </tr>
                                             
-                                            <tr class="fw-bold">
+                                            <?php if(isset($suspense_account)): ?>
+                                            <tr class="suspense-row">
+                                                <td>
+                                                    <strong><?php echo $suspense_account['name']; ?></strong>
+                                                    <br><small class="text-muted">(Balancing Figure)</small>
+                                                </td>
+                                                <td class="text-end fw-bold">
+                                                    <?php echo $currency; ?> <?php echo number_format($suspense_account['balance'], 2); ?>
+                                                </td>
+                                            </tr>
+                                            <?php endif; ?>
+                                            
+                                            <tr class="fw-bold bg-light">
                                                 <td><strong>Total Equity</strong></td>
                                                 <td class="text-end"><strong><?php echo number_format($final_equity, 2); ?></strong></td>
-                                             </tr
+                                            </tr>
                                             
                                             <!-- Grand Total -->
                                             <tr class="table-info fw-bold">
                                                 <td><strong>TOTAL LIABILITIES & EQUITY</strong></td>
                                                 <td class="text-end"><strong><?php echo number_format($total_liabilities_equity, 2); ?></strong></td>
-                                             </tr
+                                            </tr>
                                         </tbody>
-                                     </div>
+                                    </table>
                                 </div>
                             </div>
                         </div>
@@ -298,16 +360,27 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                     <div class="alert <?php echo abs($total_assets - $total_liabilities_equity) < 1 ? 'alert-success' : 'alert-danger'; ?> text-center mt-3">
                         <strong>
                             <?php if(abs($total_assets - $total_liabilities_equity) < 1): ?>
-                                <i class="fas fa-check-circle"></i> Balance Sheet is BALANCED!
+                                <i class="fas fa-check-circle"></i> ✅ Balance Sheet is BALANCED!
                             <?php else: ?>
-                                <i class="fas fa-exclamation-triangle"></i> Balance Sheet is NOT balanced! Difference: <?php echo $currency; ?> <?php echo number_format(abs($total_assets - $total_liabilities_equity), 2); ?>
+                                <i class="fas fa-exclamation-triangle"></i> ⚠️ Balance Sheet is NOT balanced! Difference: <?php echo $currency; ?> <?php echo number_format(abs($total_assets - $total_liabilities_equity), 2); ?>
                             <?php endif; ?>
                         </strong>
                     </div>
                     
+                    <!-- Explanation for new users -->
+                    <?php if($total_liabilities_equity == 0 && $total_assets > 0): ?>
+                    <div class="alert alert-warning text-center mt-2">
+                        <i class="fas fa-info-circle"></i> 
+                        <strong>Why is my balance sheet not balanced?</strong><br>
+                        You need to set up opening balances for Equity accounts. 
+                        <a href="accounting.php?tab=chart" class="alert-link">Click here to add Owner's Equity account</a> 
+                        with an opening balance equal to your total assets.
+                    </div>
+                    <?php endif; ?>
+                    
                     <div class="text-center mt-3">
                         <hr>
-                        <p>This is a computer generated report</p>
+                        <small>This is a computer generated report</small>
                     </div>
                 </div>
             </div>

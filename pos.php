@@ -23,7 +23,6 @@ function getCurrentShift($pdo) {
         $startMinutes = intval($startParts[0]) * 60 + intval($startParts[1]);
         $endMinutes = intval($endParts[0]) * 60 + intval($endParts[1]);
         
-        // Handle overnight shifts
         if($endMinutes < $startMinutes) {
             if($currentTimeValue >= $startMinutes || $currentTimeValue <= $endMinutes) {
                 return $shift['id'];
@@ -37,17 +36,43 @@ function getCurrentShift($pdo) {
     return null;
 }
 
-// Get active nozzles with stock info
+// REVISED: Get nozzles with TANK stock info (not nozzle stock)
+// One tank can have multiple nozzles - all show the SAME tank stock
 $nozzles = $pdo->query("
-    SELECT n.*, t.product_id, p.product_name, p.unit_price, t.current_stock_liters 
+    SELECT 
+        n.*, 
+        t.id as tank_id,
+        t.tank_name,
+        t.product_id, 
+        t.current_stock_liters as tank_stock,
+        t.capacity_liters as tank_capacity,
+        p.product_name, 
+        p.unit_price 
     FROM nozzles n 
     JOIN tanks t ON n.tank_id = t.id 
     JOIN fuel_products p ON t.product_id = p.id 
-    WHERE n.is_active = 1
-    ORDER BY n.nozzle_name
+    WHERE n.is_active = 1 AND t.is_active = 1
+    ORDER BY t.tank_name, n.nozzle_name
 ")->fetchAll();
 
-// Get products with stock info (from tanks)
+// Group nozzles by tank for better display
+$tanks_with_nozzles = [];
+foreach($nozzles as $nozzle) {
+    $tank_id = $nozzle['tank_id'];
+    if(!isset($tanks_with_nozzles[$tank_id])) {
+        $tanks_with_nozzles[$tank_id] = [
+            'tank_name' => $nozzle['tank_name'],
+            'tank_stock' => $nozzle['tank_stock'],
+            'tank_capacity' => $nozzle['tank_capacity'],
+            'product_name' => $nozzle['product_name'],
+            'unit_price' => $nozzle['unit_price'],
+            'nozzles' => []
+        ];
+    }
+    $tanks_with_nozzles[$tank_id]['nozzles'][] = $nozzle;
+}
+
+// Get products with total stock info (from all tanks combined)
 $products = $pdo->query("
     SELECT p.*, COALESCE(SUM(t.current_stock_liters), 0) as total_stock
     FROM fuel_products p 
@@ -66,13 +91,13 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['make_sale'])) {
     $shift_id = $_POST['shift_id'];
     $nozzle_id = $_POST['nozzle_id'];
     $product_id = $_POST['product_id'];
+    $tank_id = $_POST['tank_id'];  // Get tank_id from form
     $quantity = floatval($_POST['quantity']);
     $unit_price = floatval($_POST['unit_price']);
     $sale_type = $_POST['sale_type'];
     $customer_name = isset($_POST['customer_name']) ? $_POST['customer_name'] : '';
     $customer_phone = isset($_POST['customer_phone']) ? $_POST['customer_phone'] : '';
     
-    // Calculate total (VAT & Tax already included in unit price)
     $total_amount = $quantity * $unit_price;
     $subtotal = $total_amount;
     $vat_amount = 0;
@@ -84,18 +109,13 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['make_sale'])) {
     try {
         $pdo->beginTransaction();
         
-        // Check stock availability
-        $stmt = $pdo->prepare("
-            SELECT t.current_stock_liters 
-            FROM tanks t 
-            JOIN nozzles n ON n.tank_id = t.id 
-            WHERE n.id = ?
-        ");
-        $stmt->execute([$nozzle_id]);
+        // REVISED: Check stock from TANK (not nozzle)
+        $stmt = $pdo->prepare("SELECT current_stock_liters FROM tanks WHERE id = ?");
+        $stmt->execute([$tank_id]);
         $current_stock = $stmt->fetch()['current_stock_liters'] ?? 0;
         
         if($current_stock < $quantity) {
-            throw new Exception("Insufficient stock! Available: " . number_format($current_stock, 2) . " Liters");
+            throw new Exception("Insufficient stock in {$tank_name}! Available: " . number_format($current_stock, 2) . " Liters");
         }
         
         // Insert sale
@@ -103,15 +123,22 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['make_sale'])) {
         $stmt->execute([$invoice_no, $shift_id, $nozzle_id, $user['id'], $customer_name, $customer_phone, $sale_type, $product_id, $quantity, $unit_price, $subtotal, $vat_amount, $tax_amount, $total_amount, $received, $change]);
         $sale_id = $pdo->lastInsertId();
         
-        // Update stock
-        $stmt = $pdo->prepare("UPDATE tanks t JOIN nozzles n ON n.tank_id = t.id SET t.current_stock_liters = t.current_stock_liters - ? WHERE n.id = ?");
-        $stmt->execute([$quantity, $nozzle_id]);
+        // REVISED: Update stock on the TANK (not per nozzle)
+        $stmt = $pdo->prepare("UPDATE tanks SET current_stock_liters = current_stock_liters - ? WHERE id = ?");
+        $stmt->execute([$quantity, $tank_id]);
         
+        // Update nozzle meter reading
         $stmt = $pdo->prepare("UPDATE nozzles SET closing_meter = closing_meter + ? WHERE id = ?");
         $stmt->execute([$quantity, $nozzle_id]);
         
-        $stmt = $pdo->prepare("INSERT INTO stock_ledger (product_id, tank_id, transaction_type, reference_no, out_quantity, balance_quantity) SELECT ?, tank_id, 'sale', ?, ?, (SELECT current_stock_liters FROM tanks WHERE id = tank_id) FROM nozzles WHERE id = ?");
-        $stmt->execute([$product_id, $invoice_no, $quantity, $nozzle_id]);
+        // Get updated tank stock for ledger
+        $stmt = $pdo->prepare("SELECT current_stock_liters FROM tanks WHERE id = ?");
+        $stmt->execute([$tank_id]);
+        $new_balance = $stmt->fetch()['current_stock_liters'];
+        
+        // Insert into stock ledger
+        $stmt = $pdo->prepare("INSERT INTO stock_ledger (product_id, tank_id, transaction_type, reference_no, out_quantity, balance_quantity) VALUES (?, ?, 'sale', ?, ?, ?)");
+        $stmt->execute([$product_id, $tank_id, $invoice_no, $quantity, $new_balance]);
         
         // Get account IDs
         $stmt = $pdo->prepare("SELECT id FROM chart_of_accounts WHERE account_code = '1300'");
@@ -171,7 +198,7 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['make_sale'])) {
             // Create accounting entry for credit sale
             if($ar_account && $sales_account) {
                 $voucher_no = 'CREDIT-' . date('YmdHis') . rand(100, 999);
-                $narration = "Credit sale to $customer_name - Invoice: $invoice_no - Amount: BDT $total_amount";
+                $narration = "Credit sale to $customer_name - Invoice: $invoice_no - Amount: $total_amount";
                 
                 $stmt = $pdo->prepare("INSERT INTO vouchers (voucher_no, voucher_type, date, narration, created_by, status) VALUES (?, 'journal', CURDATE(), ?, ?, 'approved')");
                 $stmt->execute([$voucher_no, $narration, $user['id']]);
@@ -190,7 +217,7 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['make_sale'])) {
         else if($sale_type == 'cash') {
             if($cash_account && $sales_account) {
                 $voucher_no = 'CASH-' . date('YmdHis') . rand(100, 999);
-                $narration = "Cash sale - Invoice: $invoice_no - Amount: BDT $total_amount";
+                $narration = "Cash sale - Invoice: $invoice_no - Amount: $total_amount";
                 
                 $stmt = $pdo->prepare("INSERT INTO vouchers (voucher_no, voucher_type, date, narration, created_by, status) VALUES (?, 'receipt', CURDATE(), ?, ?, 'approved')");
                 $stmt->execute([$voucher_no, $narration, $user['id']]);
@@ -213,6 +240,11 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['make_sale'])) {
         $stmt->execute([$product_id]);
         $product_data = $stmt->fetch();
         
+        // Get tank name
+        $stmt = $pdo->prepare("SELECT tank_name FROM tanks WHERE id = ?");
+        $stmt->execute([$tank_id]);
+        $tank_data = $stmt->fetch();
+        
         $_SESSION['last_invoice'] = [
             'invoice_no' => $invoice_no,
             'customer_name' => $customer_name,
@@ -220,6 +252,7 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['make_sale'])) {
             'date' => date('Y-m-d H:i:s'),
             'product_id' => $product_id,
             'product' => $product_data['product_name'],
+            'tank_name' => $tank_data['tank_name'],
             'quantity' => $quantity,
             'unit_price' => $unit_price,
             'subtotal' => $subtotal,
@@ -234,7 +267,6 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['make_sale'])) {
         
         $success = "Sale completed! Invoice: $invoice_no";
         
-        // Redirect to print invoice in same window
         header("Location: print_invoice.php");
         exit();
         
@@ -260,26 +292,22 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
         .pos-card { background: white; border-radius: 15px; box-shadow: 0 2px 10px rgba(0,0,0,0.05); margin-bottom: 20px; overflow: hidden; }
         .pos-card-header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 15px 20px; font-weight: 600; }
         .pos-card-body { padding: 20px; }
-        .product-btn { 
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); 
+        .tank-card { 
+            background: white; 
+            border-radius: 15px; 
+            margin-bottom: 15px;
+            border: 2px solid #e0e0e0;
+            overflow: hidden;
+        }
+        .tank-header { 
+            background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%); 
             color: white; 
-            border: none; 
-            border-radius: 10px; 
-            padding: 15px; 
-            margin: 5px; 
-            width: 100%;
-            transition: transform 0.2s;
+            padding: 12px 15px;
+            font-weight: bold;
+            cursor: pointer;
         }
-        .product-btn:hover { transform: translateY(-3px); color: white; }
-        .product-stock { 
-            font-size: 11px; 
-            margin-top: 5px; 
-            display: block;
-            background: rgba(255,255,255,0.2);
-            padding: 3px 8px;
-            border-radius: 15px;
-        }
-        .amount-display { font-size: 28px; font-weight: bold; text-align: right; background: #f8f9fa; padding: 15px; border-radius: 10px; margin-bottom: 10px; }
+        .tank-header i { margin-right: 10px; }
+        .tank-stock { font-size: 14px; background: rgba(255,255,255,0.2); padding: 3px 10px; border-radius: 20px; }
         .nozzle-btn { 
             background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%); 
             color: white; 
@@ -291,15 +319,18 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
             transition: all 0.2s;
         }
         .nozzle-btn:hover, .nozzle-btn.active { background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%); transform: scale(1.02); }
-        .nozzle-stock {
-            font-size: 10px;
-            margin-top: 5px;
+        .nozzle-btn.disabled { opacity: 0.5; pointer-events: none; }
+        .product-stock { 
+            font-size: 11px; 
+            margin-top: 5px; 
             display: block;
             background: rgba(255,255,255,0.2);
-            padding: 2px 6px;
-            border-radius: 12px;
+            padding: 3px 8px;
+            border-radius: 15px;
         }
+        .amount-display { font-size: 28px; font-weight: bold; text-align: right; background: #f8f9fa; padding: 15px; border-radius: 10px; margin-bottom: 10px; }
         .low-stock { background: #dc3545 !important; }
+        .stock-warning { background: #ffc107; color: #856404; }
         .total-amount { font-size: 32px; color: #28a745; }
         .shift-note { font-size: 11px; color: #28a745; margin-top: 3px; display: block; }
         .current-time-badge {
@@ -314,13 +345,18 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
             gap: 8px;
             color: white;
             font-family: 'Courier New', monospace;
-            letter-spacing: 1px;
-            border: 1px solid rgba(255,255,255,0.2);
         }
-
-        .current-time-badge i {
-            font-size: 12px;
-            opacity: 0.9;
+        .tank-info {
+            background: #f8f9fa;
+            padding: 10px;
+            border-radius: 8px;
+            margin-top: 10px;
+            font-size: 13px;
+        }
+        .tank-info .label { font-weight: bold; color: #666; }
+        .nozzles-container {
+            padding: 15px;
+            background: #fafafa;
         }
     </style>
 </head>
@@ -373,18 +409,23 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                                                 <option value="">-- Select Nozzle --</option>
                                                 <?php foreach($nozzles as $nozzle): ?>
                                                     <option value="<?php echo $nozzle['id']; ?>" 
+                                                            data-tank-id="<?php echo $nozzle['tank_id']; ?>"
+                                                            data-tank-name="<?php echo $nozzle['tank_name']; ?>"
                                                             data-product="<?php echo $nozzle['product_id']; ?>"
                                                             data-product-name="<?php echo $nozzle['product_name']; ?>"
                                                             data-price="<?php echo $nozzle['unit_price']; ?>"
-                                                            data-stock="<?php echo $nozzle['current_stock_liters']; ?>">
+                                                            data-stock="<?php echo $nozzle['tank_stock']; ?>">
                                                         <?php echo $nozzle['nozzle_name']; ?> - <?php echo $nozzle['product_name']; ?>
-                                                        (Stock: <?php echo number_format($nozzle['current_stock_liters'], 0); ?> L)
+                                                        (Tank: <?php echo $nozzle['tank_name']; ?> | Stock: <?php echo number_format($nozzle['tank_stock'], 0); ?> L)
                                                     </option>
                                                 <?php endforeach; ?>
                                             </select>
                                         </div>
                                     </div>
                                 </div>
+                                
+                                <!-- Hidden field for tank_id -->
+                                <input type="hidden" name="tank_id" id="tank_id">
                                 
                                 <div class="row">
                                     <div class="col-md-6">
@@ -400,6 +441,12 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                                             <input type="number" name="unit_price" id="unit_price" class="form-control" step="0.01" readonly required>
                                         </div>
                                     </div>
+                                </div>
+                                
+                                <!-- Display tank info -->
+                                <div id="tank_info" class="tank-info" style="display:none;">
+                                    <i class="fas fa-warehouse"></i> Tank: <span id="display_tank_name"></span> | 
+                                    Available Stock: <span id="display_tank_stock"></span> Liters
                                 </div>
                                 
                                 <div class="row">
@@ -472,63 +519,80 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                 </div>
                 
                 <div class="col-md-5">
-                    <!-- Quick Products with Stock -->
+                    <!-- Tanks with their Nozzles - Grouped View -->
                     <div class="pos-card">
                         <div class="pos-card-header">
-                            <i class="fas fa-box"></i> Quick Products
+                            <i class="fas fa-warehouse"></i> Fuel Tanks & Nozzles
+                            <small class="float-end">One Tank → Multiple Nozzles</small>
                         </div>
                         <div class="pos-card-body">
-                            <div class="row">
-                                <?php foreach($products as $product): 
-                                    $stock = $product['total_stock'] ?? 0;
-                                    $low_stock_class = $stock < 500 ? 'low-stock' : '';
-                                ?>
-                                    <div class="col-6 mb-2">
-                                        <button type="button" class="product-btn quick-product <?php echo $low_stock_class; ?>" 
-                                                data-id="<?php echo $product['id']; ?>"
-                                                data-name="<?php echo $product['product_name']; ?>"
-                                                data-price="<?php echo $product['unit_price']; ?>">
-                                            <i class="fas fa-gas-pump"></i><br>
-                                            <strong><?php echo $product['product_name']; ?></strong><br>
-                                            <?php echo $currency; ?> <?php echo number_format($product['unit_price'], 2); ?>/L
-                                            <span class="product-stock">
-                                                <i class="fas fa-warehouse"></i> Stock: <?php echo number_format($stock, 0); ?> L
+                            <?php foreach($tanks_with_nozzles as $tank_id => $tank): 
+                                $stock = $tank['tank_stock'];
+                                $capacity = $tank['tank_capacity'];
+                                $fill_percent = $capacity > 0 ? ($stock / $capacity) * 100 : 0;
+                                $stock_class = $stock < 500 ? 'low-stock' : '';
+                                $stock_text_class = $stock < 500 ? 'text-danger' : ($stock < 1000 ? 'text-warning' : 'text-success');
+                            ?>
+                                <div class="tank-card">
+                                    <div class="tank-header">
+                                        <i class="fas fa-oil-can"></i> 
+                                        <?php echo htmlspecialchars($tank['tank_name']); ?>
+                                        <span class="float-end">
+                                            <span class="tank-stock">
+                                                <i class="fas fa-gas-pump"></i> 
+                                                <?php echo $tank['product_name']; ?> | 
+                                                Stock: <span class="<?php echo $stock_text_class; ?>"><?php echo number_format($stock, 0); ?> L</span>
+                                                (<?php echo round($fill_percent, 1); ?>% of <?php echo number_format($capacity, 0); ?> L)
                                             </span>
-                                        </button>
+                                        </span>
                                     </div>
-                                <?php endforeach; ?>
-                            </div>
-                        </div>
-                    </div>
-                    
-                    <!-- Available Nozzles with Stock -->
-                    <div class="pos-card">
-                        <div class="pos-card-header">
-                            <i class="fas fa-oil-can"></i> Available Nozzles
-                        </div>
-                        <div class="pos-card-body">
-                            <div class="row">
-                                <?php foreach($nozzles as $nozzle): 
-                                    $stock = $nozzle['current_stock_liters'];
-                                    $low_stock_class = $stock < 500 ? 'low-stock' : '';
-                                ?>
-                                    <div class="col-6 mb-2">
-                                        <button type="button" class="nozzle-btn quick-nozzle <?php echo $low_stock_class; ?>" 
-                                                data-id="<?php echo $nozzle['id']; ?>"
-                                                data-product="<?php echo $nozzle['product_id']; ?>"
-                                                data-product-name="<?php echo $nozzle['product_name']; ?>"
-                                                data-price="<?php echo $nozzle['unit_price']; ?>"
-                                                data-stock="<?php echo $stock; ?>">
-                                            <i class="fas fa-oil-can"></i><br>
-                                            <strong><?php echo $nozzle['nozzle_name']; ?></strong><br>
-                                            <small><?php echo $nozzle['product_name']; ?></small>
-                                            <span class="nozzle-stock">
-                                                <i class="fas fa-warehouse"></i> Stock: <?php echo number_format($stock, 0); ?> L
-                                            </span>
-                                        </button>
+                                    <div class="nozzles-container">
+                                        <!-- Progress bar for stock level -->
+                                        <div class="progress mb-2" style="height: 8px;">
+                                            <div class="progress-bar <?php echo $stock < 500 ? 'bg-danger' : ($stock < 1000 ? 'bg-warning' : 'bg-success'); ?>" 
+                                                 style="width: <?php echo min($fill_percent, 100); ?>%"></div>
+                                        </div>
+                                        
+                                        <div class="row">
+                                            <?php foreach($tank['nozzles'] as $nozzle): ?>
+                                                <div class="col-6 mb-2">
+                                                    <button type="button" class="nozzle-btn quick-nozzle <?php echo $stock_class; ?>" 
+                                                            data-id="<?php echo $nozzle['id']; ?>"
+                                                            data-tank-id="<?php echo $tank_id; ?>"
+                                                            data-tank-name="<?php echo $tank['tank_name']; ?>"
+                                                            data-product="<?php echo $nozzle['product_id']; ?>"
+                                                            data-product-name="<?php echo $tank['product_name']; ?>"
+                                                            data-price="<?php echo $tank['unit_price']; ?>"
+                                                            data-stock="<?php echo $stock; ?>"
+                                                            <?php echo $stock <= 0 ? 'disabled' : ''; ?>>
+                                                        <i class="fas fa-oil-can"></i><br>
+                                                        <strong><?php echo htmlspecialchars($nozzle['nozzle_name']); ?></strong><br>
+                                                        <small><?php echo $tank['product_name']; ?> @ <?php echo $currency; ?> <?php echo number_format($tank['unit_price'], 2); ?>/L</small>
+                                                        <span class="nozzle-stock">
+                                                            <i class="fas fa-warehouse"></i> Tank Stock: <?php echo number_format($stock, 0); ?> L
+                                                        </span>
+                                                    </button>
+                                                </div>
+                                            <?php endforeach; ?>
+                                        </div>
+                                        <?php if($stock <= 0): ?>
+                                            <div class="alert alert-danger text-center mb-0 mt-2" style="padding: 5px; font-size: 12px;">
+                                                <i class="fas fa-exclamation-triangle"></i> OUT OF STOCK - Please receive fuel
+                                            </div>
+                                        <?php elseif($stock < 500): ?>
+                                            <div class="alert alert-warning text-center mb-0 mt-2" style="padding: 5px; font-size: 12px;">
+                                                <i class="fas fa-exclamation-triangle"></i> LOW STOCK ALERT: Only <?php echo number_format($stock, 0); ?> Liters remaining
+                                            </div>
+                                        <?php endif; ?>
                                     </div>
-                                <?php endforeach; ?>
-                            </div>
+                                </div>
+                            <?php endforeach; ?>
+                            
+                            <?php if(empty($tanks_with_nozzles)): ?>
+                                <div class="alert alert-info text-center">
+                                    <i class="fas fa-info-circle"></i> No tanks or nozzles configured. Please add tanks and connect nozzles in settings.
+                                </div>
+                            <?php endif; ?>
                         </div>
                     </div>
                 </div>
@@ -539,7 +603,7 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
     <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
     <script>
-        // Update current time display - FIXED to ensure visibility
+        // Update current time display
         function updateCurrentTime() {
             const now = new Date();
             const hours = now.getHours().toString().padStart(2, '0');
@@ -551,7 +615,6 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                 timeDisplay.innerHTML = '<i class="fas fa-clock"></i> ' + timeString;
             }
         }
-        // Update time immediately and then every second
         updateCurrentTime();
         setInterval(updateCurrentTime, 1000);
 
@@ -561,29 +624,38 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
             document.getElementById('product_name').value = option.getAttribute('data-product-name');
             document.getElementById('product_id').value = option.getAttribute('data-product');
             document.getElementById('unit_price').value = option.getAttribute('data-price');
+            document.getElementById('tank_id').value = option.getAttribute('data-tank-id');
+            
+            // Show tank info
+            let tankName = option.getAttribute('data-tank-name');
+            let tankStock = option.getAttribute('data-stock');
+            document.getElementById('display_tank_name').innerText = tankName;
+            document.getElementById('display_tank_stock').innerText = parseFloat(tankStock).toFixed(2);
+            document.getElementById('tank_info').style.display = 'block';
+            
             calculateTotal();
         });
 
-        // Quick nozzle selection
+        // Quick nozzle selection (from tank cards)
         document.querySelectorAll('.quick-nozzle').forEach(btn => {
             btn.addEventListener('click', function() {
+                if(this.hasAttribute('disabled')) {
+                    alert('This nozzle is out of stock!');
+                    return;
+                }
                 document.getElementById('nozzle_id').value = this.getAttribute('data-id');
                 document.getElementById('product_name').value = this.getAttribute('data-product-name');
                 document.getElementById('product_id').value = this.getAttribute('data-product');
                 document.getElementById('unit_price').value = this.getAttribute('data-price');
+                document.getElementById('tank_id').value = this.getAttribute('data-tank-id');
+                
+                // Show tank info
+                document.getElementById('display_tank_name').innerText = this.getAttribute('data-tank-name');
+                document.getElementById('display_tank_stock').innerText = parseFloat(this.getAttribute('data-stock')).toFixed(2);
+                document.getElementById('tank_info').style.display = 'block';
                 
                 document.querySelectorAll('.quick-nozzle').forEach(b => b.classList.remove('active'));
                 this.classList.add('active');
-                calculateTotal();
-            });
-        });
-
-        // Quick product selection
-        document.querySelectorAll('.quick-product').forEach(btn => {
-            btn.addEventListener('click', function() {
-                document.getElementById('product_name').value = this.getAttribute('data-name');
-                document.getElementById('product_id').value = this.getAttribute('data-id');
-                document.getElementById('unit_price').value = this.getAttribute('data-price');
                 document.getElementById('quantity').focus();
                 calculateTotal();
             });
@@ -602,7 +674,7 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                 document.getElementById('customer_fields').style.display = 'none';
                 document.getElementById('cash_fields').style.display = 'block';
                 document.getElementById('customer_name').removeAttribute('required');
-                document.getElementById('received').value = '';
+                document.getElementById('received').value = 0;
             }
         });
 
@@ -610,7 +682,6 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
             let qty = parseFloat(document.getElementById('quantity').value) || 0;
             let price = parseFloat(document.getElementById('unit_price').value) || 0;
             let total = qty * price;
-            
             document.getElementById('total_amount').innerText = total.toFixed(2);
             calculateChange();
         }
@@ -626,63 +697,32 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
             let nozzle = document.getElementById('nozzle_id').value;
             let quantity = document.getElementById('quantity').value;
             let saleType = document.getElementById('sale_type').value;
+            let tankStock = parseFloat(document.getElementById('display_tank_stock').innerText) || 0;
             
-            if(!nozzle) { e.preventDefault(); alert('Please select a nozzle'); return false; }
-            if(!quantity || quantity <= 0) { e.preventDefault(); alert('Please enter valid quantity'); return false; }
+            if(!nozzle) { 
+                e.preventDefault(); 
+                alert('Please select a nozzle'); 
+                return false; 
+            }
+            if(!quantity || quantity <= 0) { 
+                e.preventDefault(); 
+                alert('Please enter valid quantity'); 
+                return false; 
+            }
             
-            // Check stock limit
-            let selectedNozzle = document.getElementById('nozzle_id').options[document.getElementById('nozzle_id').selectedIndex];
-            let availableStock = parseFloat(selectedNozzle.getAttribute('data-stock')) || 0;
-            
-            if(parseFloat(quantity) > availableStock) {
+            if(parseFloat(quantity) > tankStock) {
                 e.preventDefault();
-                alert('Insufficient stock! Available: ' + availableStock.toFixed(2) + ' Liters');
+                alert('Insufficient stock in tank! Available: ' + tankStock.toFixed(2) + ' Liters');
                 return false;
             }
             
             if(saleType == 'credit') {
                 let customerName = document.getElementById('customer_name').value;
-                if(!customerName) { e.preventDefault(); alert('Please enter customer name for credit sale'); return false; }
-            }
-        });
-        
-        function calculateTotal() {
-            let qty = parseFloat(document.getElementById('quantity').value) || 0;
-            let price = parseFloat(document.getElementById('unit_price').value) || 0;
-            let total = qty * price;
-            
-            document.getElementById('total_amount').innerText = total.toFixed(2);
-            calculateChange();
-        }
-        
-        function calculateChange() {
-            let total = parseFloat(document.getElementById('total_amount').innerText) || 0;
-            let received = parseFloat(document.getElementById('received').value) || 0;
-            let change = received - total;
-            document.getElementById('change_amount').value = change.toFixed(2);
-        }
-        
-        document.getElementById('saleForm').addEventListener('submit', function(e) {
-            let nozzle = document.getElementById('nozzle_id').value;
-            let quantity = document.getElementById('quantity').value;
-            let saleType = document.getElementById('sale_type').value;
-            
-            if(!nozzle) { e.preventDefault(); alert('Please select a nozzle'); return false; }
-            if(!quantity || quantity <= 0) { e.preventDefault(); alert('Please enter valid quantity'); return false; }
-            
-            // Check stock limit
-            let selectedNozzle = document.getElementById('nozzle_id').options[document.getElementById('nozzle_id').selectedIndex];
-            let availableStock = parseFloat(selectedNozzle.getAttribute('data-stock')) || 0;
-            
-            if(parseFloat(quantity) > availableStock) {
-                e.preventDefault();
-                alert('Insufficient stock! Available: ' + availableStock.toFixed(2) + ' Liters');
-                return false;
-            }
-            
-            if(saleType == 'credit') {
-                let customerName = document.getElementById('customer_name').value;
-                if(!customerName) { e.preventDefault(); alert('Please enter customer name for credit sale'); return false; }
+                if(!customerName) { 
+                    e.preventDefault(); 
+                    alert('Please enter customer name for credit sale'); 
+                    return false; 
+                }
             }
         });
     </script>

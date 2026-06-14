@@ -5,38 +5,99 @@ if(!isLoggedIn()) redirect('index.php');
 $from_date = $_GET['from_date'] ?? date('Y-m-01');
 $to_date = $_GET['to_date'] ?? date('Y-m-t');
 
-// Get income accounts
+// Get income accounts (excluding duplicate from sales table)
 $incomes = $pdo->query("SELECT * FROM chart_of_accounts WHERE account_type = 'income' AND is_active = 1")->fetchAll();
+
 // Get expense accounts
 $expenses = $pdo->query("SELECT * FROM chart_of_accounts WHERE account_type = 'expense' AND is_active = 1")->fetchAll();
 
+// Calculate income from voucher entries only (not double-counting)
 $income_data = [];
 foreach($incomes as $inc) {
-    $stmt = $pdo->prepare("SELECT SUM(credit_amount) - SUM(debit_amount) as total FROM voucher_items vi JOIN vouchers v ON vi.voucher_id = v.id WHERE vi.account_id = ? AND v.date BETWEEN ? AND ? AND v.status = 'approved'");
+    // For income accounts: Credit - Debit
+    $stmt = $pdo->prepare("
+        SELECT COALESCE(SUM(vi.credit_amount), 0) - COALESCE(SUM(vi.debit_amount), 0) as total 
+        FROM voucher_items vi 
+        JOIN vouchers v ON vi.voucher_id = v.id 
+        WHERE vi.account_id = ? 
+        AND v.date BETWEEN ? AND ? 
+        AND v.status = 'approved'
+    ");
     $stmt->execute([$inc['id'], $from_date, $to_date]);
     $total = $stmt->fetch()['total'] ?? 0;
-    if($total != 0) $income_data[] = ['name' => $inc['account_name'], 'amount' => $total];
+    
+    // Only show non-zero amounts
+    if(abs($total) > 0.01) {
+        $income_data[] = [
+            'name' => $inc['account_name'], 
+            'amount' => abs($total)
+        ];
+    }
 }
 
+// Calculate expenses from voucher entries
 $expense_data = [];
 foreach($expenses as $exp) {
-    $stmt = $pdo->prepare("SELECT SUM(debit_amount) - SUM(credit_amount) as total FROM voucher_items vi JOIN vouchers v ON vi.voucher_id = v.id WHERE vi.account_id = ? AND v.date BETWEEN ? AND ? AND v.status = 'approved'");
+    // For expense accounts: Debit - Credit
+    $stmt = $pdo->prepare("
+        SELECT COALESCE(SUM(vi.debit_amount), 0) - COALESCE(SUM(vi.credit_amount), 0) as total 
+        FROM voucher_items vi 
+        JOIN vouchers v ON vi.voucher_id = v.id 
+        WHERE vi.account_id = ? 
+        AND v.date BETWEEN ? AND ? 
+        AND v.status = 'approved'
+    ");
     $stmt->execute([$exp['id'], $from_date, $to_date]);
     $total = $stmt->fetch()['total'] ?? 0;
-    if($total != 0) $expense_data[] = ['name' => $exp['account_name'], 'amount' => $total];
+    
+    // Only show non-zero amounts
+    if(abs($total) > 0.01) {
+        $expense_data[] = [
+            'name' => $exp['account_name'], 
+            'amount' => abs($total)
+        ];
+    }
 }
 
-// Add fuel sales directly
-$stmt = $pdo->prepare("SELECT SUM(total_amount) as total_sales FROM sales WHERE DATE(sale_date) BETWEEN ? AND ?");
-$stmt->execute([$from_date, $to_date]);
-$fuel_sales = $stmt->fetch()['total_sales'] ?? 0;
-$income_data[] = ['name' => 'Fuel Sales', 'amount' => $fuel_sales];
+// Remove duplicate: Fuel Sales from chart_of_accounts already includes all sales via vouchers
+// So we DON'T need to add separately from sales table!
 
-// Add cost of goods sold (fuel purchases)
-$stmt = $pdo->prepare("SELECT SUM(total_amount) as total_purchase FROM fuel_receivings WHERE receipt_date BETWEEN ? AND ?");
-$stmt->execute([$from_date, $to_date]);
-$cogs = $stmt->fetch()['total_purchase'] ?? 0;
-$expense_data[] = ['name' => 'Cost of Goods Sold (Fuel Purchase)', 'amount' => $cogs];
+// Optional: If you want to verify, you can check if Fuel Sales is missing and add it
+$has_fuel_sales = false;
+foreach($income_data as $inc) {
+    if(stripos($inc['name'], 'Fuel Sales') !== false || stripos($inc['name'], 'Fuel Sale') !== false) {
+        $has_fuel_sales = true;
+        break;
+    }
+}
+
+// If no fuel sales found in voucher entries, then add from sales table as fallback
+if(!$has_fuel_sales) {
+    $stmt = $pdo->prepare("SELECT COALESCE(SUM(total_amount), 0) as total_sales FROM sales WHERE DATE(sale_date) BETWEEN ? AND ?");
+    $stmt->execute([$from_date, $to_date]);
+    $fuel_sales = $stmt->fetch()['total_sales'] ?? 0;
+    if($fuel_sales > 0) {
+        $income_data[] = ['name' => 'Fuel Sales (Direct)', 'amount' => $fuel_sales];
+    }
+}
+
+// Calculate COGS from fuel_receivings (if not already in expenses)
+$has_cogs = false;
+foreach($expense_data as $exp) {
+    if(stripos($exp['name'], 'COGS') !== false || stripos($exp['name'], 'Cost of Goods') !== false || stripos($exp['name'], 'Fuel Purchase') !== false) {
+        $has_cogs = true;
+        break;
+    }
+}
+
+if(!$has_cogs) {
+    $stmt = $pdo->prepare("SELECT COALESCE(SUM(total_amount), 0) as total_purchase FROM fuel_receivings WHERE receipt_date BETWEEN ? AND ?");
+    $stmt->execute([$from_date, $to_date]);
+    $cogs = $stmt->fetch()['total_purchase'] ?? 0;
+    if($cogs > 0) {
+        $expense_data[] = ['name' => 'Cost of Goods Sold (Fuel Purchase)', 'amount' => $cogs];
+    }
+}
 
 $total_income = array_sum(array_column($income_data, 'amount'));
 $total_expense = array_sum(array_column($expense_data, 'amount'));
@@ -60,7 +121,9 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
             border-radius: 15px;
             padding: 20px;
             margin-bottom: 20px;
+            transition: transform 0.3s;
         }
+        .stats-card:hover { transform: translateY(-5px); }
         .stats-card i {
             font-size: 40px;
             opacity: 0.5;
@@ -70,23 +133,20 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
             width: 100%;
             border-collapse: collapse;
         }
-        .pl-table th,
-        .pl-table td {
+        .pl-table th, .pl-table td {
             border: 1px solid #dee2e6;
-            padding: 10px;
+            padding: 12px;
         }
         .pl-table th {
-            background-color: #f8f9fa;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
             font-weight: bold;
         }
-        .text-end {
-            text-align: right;
-        }
-        .fw-bold {
-            font-weight: bold;
-        }
+        .text-end { text-align: right; }
+        .fw-bold { font-weight: bold; }
+        
         @media print {
-            .sidebar, .no-print, .stats-card, .btn {
+            .sidebar, .no-print, .stats-card, .btn, .card-header .btn, form {
                 display: none !important;
             }
             .main-content {
@@ -101,10 +161,16 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
             .pl-table th, .pl-table td {
                 border: 1px solid #000 !important;
             }
+            .pl-table th {
+                background: #ddd !important;
+                color: black !important;
+            }
         }
-        .print-header {
-            display: none;
-        }
+        .print-header { display: none; }
+        
+        .income-row { background-color: #e8f5e9; }
+        .expense-row { background-color: #ffebee; }
+        .total-row { background-color: #e3f2fd; font-weight: bold; }
     </style>
 </head>
 <body>
@@ -127,8 +193,8 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                     <button onclick="window.print()" class="btn btn-primary">
                         <i class="fas fa-print"></i> Print Report
                     </button>
-                    <a href="reports.php" class="btn btn-secondary">
-                        <i class="fas fa-arrow-left"></i> Back
+                    <a href="accounting.php?tab=reports" class="btn btn-secondary">
+                        <i class="fas fa-arrow-left"></i> Back to Reports
                     </a>
                 </div>
             </div>
@@ -140,18 +206,18 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                 </div>
                 <div class="card-body">
                     <form method="GET" class="row g-3">
-                        <div class="col-md-3">
+                        <div class="col-md-4">
                             <label>From Date</label>
                             <input type="date" name="from_date" class="form-control" value="<?php echo $from_date; ?>">
                         </div>
-                        <div class="col-md-3">
+                        <div class="col-md-4">
                             <label>To Date</label>
                             <input type="date" name="to_date" class="form-control" value="<?php echo $to_date; ?>">
                         </div>
-                        <div class="col-md-2">
+                        <div class="col-md-4">
                             <label>&nbsp;</label>
                             <button type="submit" class="btn btn-info w-100">
-                                <i class="fas fa-search"></i> View
+                                <i class="fas fa-search"></i> Generate Statement
                             </button>
                         </div>
                     </form>
@@ -187,11 +253,11 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
             <div class="card">
                 <div class="card-header bg-success text-white text-center">
                     <h4>Profit & Loss Statement</h4>
-                    <h5><?php echo date('d M Y', strtotime($from_date)); ?> to <?php echo date('d M Y', strtotime($to_date)); ?></h5>
+                    <p class="mb-0"><?php echo date('d F Y', strtotime($from_date)); ?> to <?php echo date('d F Y', strtotime($to_date)); ?></p>
                 </div>
                 <div class="card-body">
                     <div class="row">
-                        <!-- LEFT SIDE: INCOME (CREDIT) -->
+                        <!-- LEFT SIDE: INCOME -->
                         <div class="col-md-6">
                             <div class="card h-100">
                                 <div class="card-header bg-success text-white">
@@ -200,21 +266,27 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                                 <div class="card-body p-0">
                                     <table class="pl-table">
                                         <thead>
-                                            <tr>
+                                            <tr style="background: #28a745; color: white;">
                                                 <th>Particulars</th>
                                                 <th class="text-end">Amount (<?php echo $currency; ?>)</th>
                                             </tr>
                                         </thead>
                                         <tbody>
-                                            <?php foreach($income_data as $inc): ?>
-                                            <tr>
-                                                <td><?php echo $inc['name']; ?></td>
-                                                <td class="text-end"><?php echo $currency; ?> <?php echo number_format($inc['amount'], 2); ?></td>
-                                            </tr>
-                                            <?php endforeach; ?>
-                                            <tr class="fw-bold bg-light">
-                                                <td>TOTAL INCOME</td>
-                                                <td class="text-end"><?php echo $currency; ?> <?php echo number_format($total_income, 2); ?></td>
+                                            <?php if(empty($income_data)): ?>
+                                                <tr>
+                                                    <td colspan="2" class="text-center text-muted">No income records found</td>
+                                                </tr>
+                                            <?php else: ?>
+                                                <?php foreach($income_data as $inc): ?>
+                                                <tr class="income-row">
+                                                    <td><?php echo htmlspecialchars($inc['name']); ?></td>
+                                                    <td class="text-end"><?php echo $currency; ?> <?php echo number_format($inc['amount'], 2); ?></td>
+                                                </tr>
+                                                <?php endforeach; ?>
+                                            <?php endif; ?>
+                                            <tr class="total-row" style="background: #d4edda; font-weight: bold;">
+                                                <td><strong>TOTAL INCOME</strong></td>
+                                                <td class="text-end"><strong><?php echo $currency; ?> <?php echo number_format($total_income, 2); ?></strong></td>
                                             </tr>
                                         </tbody>
                                     </table>
@@ -222,7 +294,7 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                             </div>
                         </div>
                         
-                        <!-- RIGHT SIDE: EXPENSES (DEBIT) -->
+                        <!-- RIGHT SIDE: EXPENSES -->
                         <div class="col-md-6">
                             <div class="card h-100">
                                 <div class="card-header bg-danger text-white">
@@ -231,21 +303,27 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                                 <div class="card-body p-0">
                                     <table class="pl-table">
                                         <thead>
-                                            <tr>
+                                            <tr style="background: #dc3545; color: white;">
                                                 <th>Particulars</th>
                                                 <th class="text-end">Amount (<?php echo $currency; ?>)</th>
                                             </tr>
                                         </thead>
                                         <tbody>
-                                            <?php foreach($expense_data as $exp): ?>
-                                            <tr>
-                                                <td><?php echo $exp['name']; ?></td>
-                                                <td class="text-end"><?php echo $currency; ?> <?php echo number_format($exp['amount'], 2); ?></td>
-                                            </tr>
-                                            <?php endforeach; ?>
-                                            <tr class="fw-bold bg-light">
-                                                <td>TOTAL EXPENSES</td>
-                                                <td class="text-end"><?php echo $currency; ?> <?php echo number_format($total_expense, 2); ?></td>
+                                            <?php if(empty($expense_data)): ?>
+                                                <tr>
+                                                    <td colspan="2" class="text-center text-muted">No expense records found</td>
+                                                </tr>
+                                            <?php else: ?>
+                                                <?php foreach($expense_data as $exp): ?>
+                                                <tr class="expense-row">
+                                                    <td><?php echo htmlspecialchars($exp['name']); ?></td>
+                                                    <td class="text-end"><?php echo $currency; ?> <?php echo number_format($exp['amount'], 2); ?></td>
+                                                </tr>
+                                                <?php endforeach; ?>
+                                            <?php endif; ?>
+                                            <tr class="total-row" style="background: #f8d7da; font-weight: bold;">
+                                                <td><strong>TOTAL EXPENSES</strong></td>
+                                                <td class="text-end"><strong><?php echo $currency; ?> <?php echo number_format($total_expense, 2); ?></strong></td>
                                             </tr>
                                         </tbody>
                                     </table>
@@ -263,6 +341,13 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                                     NET <?php echo $net_profit >= 0 ? 'PROFIT' : 'LOSS'; ?>: 
                                     <?php echo $currency; ?> <?php echo number_format(abs($net_profit), 2); ?>
                                 </h4>
+                                <p class="mb-0">
+                                    <?php if($net_profit >= 0): ?>
+                                        Congratulations! Your business made a profit during this period.
+                                    <?php else: ?>
+                                        Your expenses exceeded income during this period. Consider reviewing costs.
+                                    <?php endif; ?>
+                                </p>
                             </div>
                         </div>
                     </div>
