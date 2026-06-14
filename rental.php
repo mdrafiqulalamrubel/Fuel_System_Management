@@ -56,11 +56,11 @@ if(isset($_GET['delete_id'])) {
     }
 }
 
-// Record Rent Payment - FIXED
+// Record Rent Payment
 if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['record_payment'])) {
     $tenant_id = $_POST['tenant_id'];
     $payment_date = $_POST['payment_date'];
-    $month = $_POST['month']; // Format: YYYY-MM
+    $month = $_POST['month'];
     $amount = floatval($_POST['amount']);
     $late_fee = isset($_POST['late_fee']) ? floatval($_POST['late_fee']) : 0;
     $payment_method = isset($_POST['payment_method']) ? $_POST['payment_method'] : 'cash';
@@ -87,10 +87,6 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['record_payment'])) {
         // Insert payment
         $stmt = $pdo->prepare("INSERT INTO rent_payments (tenant_id, payment_date, month, amount, late_fee, payment_method, notes, receipt_no) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
         $stmt->execute([$tenant_id, $payment_date, $month, $amount, $late_fee, $payment_method, $notes, $receipt_no]);
-        
-        // Update customer current balance in tenants table (if you have this field)
-        // $stmt = $pdo->prepare("UPDATE tenants SET current_balance = current_balance - ? WHERE id = ?");
-        // $stmt->execute([$amount, $tenant_id]);
         
         // Create accounting entry
         $voucher_no = 'RENT-' . date('YmdHis');
@@ -124,7 +120,7 @@ $payments = $pdo->query("
     LIMIT 100
 ")->fetchAll();
 
-// Calculate dues for each tenant - CORRECTED VERSION
+// Calculate dues for each tenant
 $tenant_dues = [];
 foreach($tenants as $tenant) {
     // Get all payments for this tenant
@@ -136,7 +132,6 @@ foreach($tenants as $tenant) {
     $paid_months_list = [];
     foreach($paid_records as $pr) {
         $paid_amount += $pr['amount'];
-        // Ensure month is in YYYY-MM format
         $month_key = (strlen($pr['month']) == 7) ? $pr['month'] : date('Y-m', strtotime($pr['month']));
         $paid_months_list[] = $month_key;
     }
@@ -155,7 +150,6 @@ foreach($tenants as $tenant) {
         $start = new DateTime($tenant['agreement_start']);
         $start->modify('first day of this month');
     } else {
-        // If no agreement date, use the earliest payment month or current month
         if(!empty($paid_months_list)) {
             $start = new DateTime(min($paid_months_list) . '-01');
             $start->modify('first day of this month');
@@ -174,12 +168,10 @@ foreach($tenants as $tenant) {
         $month_date->modify("+$i months");
         $month_key = $month_date->format('Y-m');
         
-        // Skip if month is after current month
         if($month_key > $current_month_key) {
             continue;
         }
         
-        // Check if this month has been paid
         $is_paid = in_array($month_key, $paid_months_list);
         
         if(!$is_paid) {
@@ -224,6 +216,55 @@ foreach($tenant_dues as $due) { $total_due += $due['due_amount']; }
         .stats-card i { font-size: 40px; opacity: 0.5; float: right; }
         .due-badge { background: #dc3545; color: white; padding: 3px 8px; border-radius: 20px; font-size: 11px; display: inline-block; margin: 2px; }
         .paid-badge { background: #28a745; color: white; padding: 3px 8px; border-radius: 20px; font-size: 11px; }
+        
+        /* ===== FIXED TAB STYLES ===== */
+        .nav-tabs {
+            border-bottom: 2px solid #dee2e6;
+            margin-bottom: 20px;
+        }
+        
+        .nav-tabs .nav-link {
+            color: #495057 !important;
+            background: #e9ecef !important;
+            border-radius: 8px 8px 0 0;
+            margin-right: 5px;
+            font-weight: 500;
+            padding: 10px 20px;
+            border: none;
+            transition: all 0.3s ease;
+        }
+        
+        .nav-tabs .nav-link:hover {
+            background: #dee2e6 !important;
+            color: #000 !important;
+        }
+        
+        .nav-tabs .nav-link.active {
+            color: white !important;
+            font-weight: 600;
+        }
+        
+        .nav-tabs .nav-link.active i {
+            color: white !important;
+        }
+        
+        .nav-tabs .nav-link i {
+            margin-right: 8px;
+        }
+        
+        /* Active tab colors */
+        .nav-tabs .nav-link:first-child.active {
+            background: #007bff !important;
+        }
+        
+        .nav-tabs .nav-link:nth-child(2).active {
+            background: #28a745 !important;
+        }
+        
+        .nav-tabs .nav-link:nth-child(3).active {
+            background: #dc3545 !important;
+        }
+        /* ===== END FIXED TAB STYLES ===== */
     </style>
 </head>
 <body>
@@ -283,7 +324,7 @@ foreach($tenant_dues as $due) { $total_due += $due['due_amount']; }
                 </div>
             </div>
             
-            <!-- Tabs -->
+            <!-- Tabs - FIXED COLORS -->
             <ul class="nav nav-tabs mb-3">
                 <li class="nav-item">
                     <a class="nav-link <?php echo $active_tab == 'tenants' ? 'active' : ''; ?>" href="?tab=tenants">
@@ -357,11 +398,11 @@ foreach($tenant_dues as $due) { $total_due += $due['due_amount']; }
                                         <a href="?delete_id=<?php echo $tenant['id']; ?>" class="btn btn-sm btn-danger" onclick="return confirm('Deactivate this tenant?')">
                                             <i class="fas fa-trash"></i> Delete
                                         </a>
-                                     </td>
-                                 </tr>
+                                      </div>
+                                   </tr
                                 <?php endforeach; ?>
                             </tbody>
-                        </table>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -394,21 +435,21 @@ foreach($tenant_dues as $due) { $total_due += $due['due_amount']; }
                                 <tr>
                                     <td><?php echo date('d/m/Y', strtotime($payment['payment_date'])); ?></td>
                                     <td><?php echo $payment['receipt_no']; ?></td>
-                                    <td><?php echo htmlspecialchars($payment['tenant_name']); ?></td>
-                                    <td><?php echo htmlspecialchars($payment['shop_no']); ?></td>
-                                    <td><?php echo date('F Y', strtotime($payment['month'] . '-01')); ?></td>
-                                    <td>BDT <?php echo number_format($payment['amount'], 2); ?></td>
-                                    <td>BDT <?php echo number_format($payment['late_fee'], 2); ?></td>
-                                    <td><?php echo ucfirst($payment['payment_method'] ?? 'Cash'); ?></td>
+                                    <td><?php echo htmlspecialchars($payment['tenant_name']); ?></div>
+                                    <td><?php echo htmlspecialchars($payment['shop_no']); ?></div>
+                                    <td><?php echo date('F Y', strtotime($payment['month'] . '-01')); ?></div>
+                                    <td>BDT <?php echo number_format($payment['amount'], 2); ?></div>
+                                    <td>BDT <?php echo number_format($payment['late_fee'], 2); ?></div>
+                                    <td><?php echo ucfirst($payment['payment_method'] ?? 'Cash'); ?></div>
                                     <td>
                                         <a href="?delete_payment=<?php echo $payment['id']; ?>&tab=payments" class="btn btn-sm btn-danger" onclick="return confirm('Delete this payment?')">
                                             <i class="fas fa-trash"></i>
                                         </a>
-                                     </td>
-                                 </tr>
+                                      </div>
+                                   </tr
                                 <?php endforeach; ?>
                             </tbody>
-                        </table>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -440,11 +481,11 @@ foreach($tenant_dues as $due) { $total_due += $due['due_amount']; }
                                     if($due_info['due_amount'] > 0):
                                 ?>
                                 <tr>
-                                    <td><strong><?php echo htmlspecialchars($tenant['tenant_name']); ?></strong></td>
-                                    <td><?php echo htmlspecialchars($tenant['shop_no']); ?></td>
-                                    <td>BDT <?php echo number_format($tenant['monthly_rent'], 2); ?></td>
-                                    <td>BDT <?php echo number_format($due_info['paid_amount'], 2); ?></td>
-                                    <td class="text-danger fw-bold">BDT <?php echo number_format($due_info['due_amount'], 2); ?></td>
+                                    <td><strong><?php echo htmlspecialchars($tenant['tenant_name']); ?></strong></div>
+                                    <td><?php echo htmlspecialchars($tenant['shop_no']); ?></div>
+                                    <td>BDT <?php echo number_format($tenant['monthly_rent'], 2); ?>}</div>
+                                    <td>BDT <?php echo number_format($due_info['paid_amount'], 2); ?>}</div>
+                                    <td class="text-danger fw-bold">BDT <?php echo number_format($due_info['due_amount'], 2); ?>}</div>
                                     <td>
                                         <?php 
                                         $months_display = array_slice($due_info['due_months'], 0, 6);
@@ -458,23 +499,23 @@ foreach($tenant_dues as $due) { $total_due += $due['due_amount']; }
                                             echo '<span class="paid-badge">No due months</span>';
                                         }
                                         ?>
-                                     </td>
+                                      </div>
                                     <td>
                                         <button class="btn btn-sm btn-success" onclick="recordPayment(<?php echo $tenant['id']; ?>, '<?php echo addslashes($tenant['tenant_name']); ?>', <?php echo $tenant['monthly_rent']; ?>)">
                                             <i class="fas fa-money-bill"></i> Receive Payment
                                         </button>
-                                     </td>
-                                 </tr>
+                                      </div>
+                                   </tr
                                 <?php endif; endforeach; ?>
                                 <?php if(empty(array_filter($tenant_dues, fn($d)=>$d['due_amount']>0))): ?>
                                 <tr>
                                     <td colspan="7" class="text-center text-success">
                                         <i class="fas fa-check-circle"></i> All tenants are up to date! No dues pending.
-                                    </td>
-                                </tr>
+                                     </div>
+                                   </tr
                                 <?php endif; ?>
                             </tbody>
-                        </table>
+                        </div>
                     </div>
                 </div>
             </div>
