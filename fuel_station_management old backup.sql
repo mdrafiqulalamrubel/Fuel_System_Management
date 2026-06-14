@@ -3,7 +3,7 @@
 -- https://www.phpmyadmin.net/
 --
 -- Host: 127.0.0.1
--- Generation Time: Jun 13, 2026 at 03:11 PM
+-- Generation Time: Jun 14, 2026 at 06:56 AM
 -- Server version: 10.4.32-MariaDB
 -- PHP Version: 8.2.12
 
@@ -67,7 +67,8 @@ INSERT INTO `activity_logs` (`id`, `user_id`, `action`, `description`, `ip_addre
 (24, 4, 'login', 'User logged in', '::1', '2026-06-13 11:17:28'),
 (25, 1, 'login', 'User logged in', '::1', '2026-06-13 11:17:42'),
 (26, 3, 'login', 'User logged in', '::1', '2026-06-13 11:35:20'),
-(27, 1, 'login', 'User logged in', '::1', '2026-06-13 11:52:04');
+(27, 1, 'login', 'User logged in', '::1', '2026-06-13 11:52:04'),
+(28, 1, 'login', 'User logged in', '::1', '2026-06-14 04:28:16');
 
 -- --------------------------------------------------------
 
@@ -114,19 +115,25 @@ CREATE TABLE `chart_of_accounts` (
 --
 
 INSERT INTO `chart_of_accounts` (`id`, `account_code`, `account_name`, `account_type`, `parent_id`, `opening_balance`, `balance_type`, `is_active`) VALUES
-(1, '1000', 'Cash Account', 'asset', NULL, 150000.00, 'debit', 1),
-(2, '1100', 'Bank Account', 'asset', NULL, 2200000.00, 'debit', 1),
-(3, '1200', 'Fuel Inventory', 'asset', NULL, 150000.00, 'debit', 1),
-(4, '1300', 'Accounts Receivable', 'asset', NULL, 25000.00, 'debit', 1),
-(5, '2000', 'Accounts Payable', 'liability', NULL, 75000.00, 'credit', 1),
-(6, '2100', 'Loan Payable', 'liability', NULL, 200000.00, 'credit', 1),
-(7, '3000', 'Owner\'s Equity', 'equity', NULL, 500000.00, 'credit', 1),
-(8, '4000', 'Fuel Sales', 'income', NULL, 0.00, 'debit', 1),
-(9, '4100', 'Rental Income', 'income', NULL, 0.00, 'debit', 1),
+(1, '1000', 'Cash Account', 'asset', NULL, 0.00, 'debit', 1),
+(2, '1100', 'Bank Account', 'asset', NULL, 0.00, 'debit', 1),
+(3, '1200', 'Fuel Inventory', 'asset', NULL, 0.00, 'debit', 1),
+(4, '1300', 'Accounts Receivable', 'asset', NULL, 0.00, 'debit', 1),
+(5, '2000', 'Accounts Payable', 'liability', NULL, 0.00, 'credit', 1),
+(6, '2100', 'Loan Payable', 'liability', NULL, 0.00, 'credit', 1),
+(7, '3000', 'Owner\'s Equity', 'equity', NULL, 0.00, 'credit', 1),
+(8, '4000', 'Fuel Sales', 'income', NULL, 0.00, 'credit', 1),
+(9, '4100', 'Rental Income', 'income', NULL, 0.00, 'credit', 1),
 (10, '5000', 'Fuel Purchase', 'expense', NULL, 0.00, 'debit', 1),
 (11, '5100', 'Stock Loss Expense', 'expense', NULL, 0.00, 'debit', 1),
 (12, '5200', 'Utility Expense', 'expense', NULL, 0.00, 'debit', 1),
-(30, '5110', 'Salary Expense', 'expense', NULL, 0.00, 'debit', 1);
+(30, '5110', 'Salary Expense', 'expense', NULL, 0.00, 'debit', 1),
+(39, '3200', 'Retained Earnings', 'equity', NULL, 0.00, 'credit', 1),
+(41, '3100', 'Retained Earnings', 'equity', NULL, 0.00, 'credit', 1),
+(57, '4200', 'Service Income', 'income', NULL, 0.00, 'credit', 1),
+(60, '5300', 'Rent Expense', 'expense', NULL, 0.00, 'debit', 1),
+(61, '5400', 'Maintenance Expense', 'expense', NULL, 0.00, 'debit', 1),
+(62, '5500', 'Fuel Purchase Expense', 'expense', NULL, 0.00, 'debit', 1);
 
 -- --------------------------------------------------------
 
@@ -780,7 +787,15 @@ INSERT INTO `vouchers` (`id`, `voucher_no`, `voucher_type`, `date`, `narration`,
 (20, 'CASH-20260613141456972', 'receipt', '2026-06-13', 'Cash sale - Invoice: INV-20260613141456 - Amount: BDT 650', 1, NULL, 'approved', '2026-06-13 12:14:56'),
 (21, 'CASH-20260613141919570', 'receipt', '2026-06-13', 'Cash sale - Invoice: INV-20260613141919 - Amount: BDT 850', 1, NULL, 'approved', '2026-06-13 12:19:19'),
 (22, 'CASH-20260613144358838', 'receipt', '2026-06-13', 'Cash sale - Invoice: INV-20260613144357 - Amount: BDT 650', 1, NULL, 'approved', '2026-06-13 12:43:58'),
-(23, 'CASH-20260613145248201', 'receipt', '2026-06-13', 'Cash sale - Invoice: INV-20260613145248 - Amount: BDT 935', 1, NULL, 'approved', '2026-06-13 12:52:48');
+(23, 'CASH-20260613145248201', 'receipt', '2026-06-13', 'Cash sale - Invoice: INV-20260613145248 - Amount: BDT 935', 1, NULL, 'approved', '2026-06-13 12:52:48'),
+(24, 'VCH-SALES-001', 'receipt', '2026-06-14', 'Fuel sales revenue - 1000 Liters', 1, NULL, 'approved', '2026-06-14 04:44:49'),
+(25, 'VCH-COGS-001', 'journal', '2026-06-14', 'Cost of goods sold for fuel sales', 1, NULL, 'approved', '2026-06-14 04:44:49'),
+(26, 'VCH-SAL-001', 'payment', '2026-06-14', 'Monthly salary payment', 1, NULL, 'approved', '2026-06-14 04:44:49'),
+(27, 'VCH-UTIL-001', 'payment', '2026-06-14', 'Utility bills payment', 1, NULL, 'approved', '2026-06-14 04:44:49'),
+(28, 'VCH-RENT-001', 'payment', '2026-06-14', 'Monthly rent payment', 1, NULL, 'approved', '2026-06-14 04:44:50'),
+(29, 'VCH-MAINT-001', 'payment', '2026-06-14', 'Equipment maintenance', 1, NULL, 'approved', '2026-06-14 04:44:50'),
+(30, 'VCH-RENTINC-001', 'receipt', '2026-06-14', 'Shop rental income', 1, NULL, 'approved', '2026-06-14 04:44:50'),
+(31, 'VCH-PURCH-001', 'payment', '2026-06-14', 'Fuel purchase from supplier', 1, NULL, 'approved', '2026-06-14 04:44:50');
 
 -- --------------------------------------------------------
 
@@ -821,7 +836,23 @@ INSERT INTO `voucher_items` (`id`, `voucher_id`, `account_id`, `debit_amount`, `
 (33, 22, 1, 650.00, 0.00, 'Cash sale - Invoice: INV-20260613144357'),
 (34, 22, 8, 0.00, 650.00, 'Fuel sale revenue - Invoice: INV-20260613144357'),
 (35, 23, 1, 935.00, 0.00, 'Cash sale - Invoice: INV-20260613145248'),
-(36, 23, 8, 0.00, 935.00, 'Fuel sale revenue - Invoice: INV-20260613145248');
+(36, 23, 8, 0.00, 935.00, 'Fuel sale revenue - Invoice: INV-20260613145248'),
+(37, 24, 1, 85000.00, 0.00, 'Cash received from fuel sales'),
+(38, 24, 8, 0.00, 85000.00, 'Fuel sales revenue - 1000L @ 85/L'),
+(39, 25, 10, 75000.00, 0.00, 'Cost of fuel sold'),
+(40, 25, 3, 0.00, 75000.00, 'Inventory reduction'),
+(41, 26, 11, 50000.00, 0.00, 'Staff salaries for the month'),
+(42, 26, 1, 0.00, 50000.00, 'Salary payment made'),
+(43, 27, 12, 15000.00, 0.00, 'Electricity and water bills'),
+(44, 27, 1, 0.00, 15000.00, 'Utility payment made'),
+(45, 28, 60, 25000.00, 0.00, 'Station rent for the month'),
+(46, 28, 1, 0.00, 25000.00, 'Rent payment made'),
+(47, 29, 61, 8000.00, 0.00, 'Nozzle repair and maintenance'),
+(48, 29, 1, 0.00, 8000.00, 'Maintenance payment'),
+(49, 30, 1, 3000.00, 0.00, 'Rent received from tenant'),
+(50, 30, 9, 0.00, 3000.00, 'Shop rental income'),
+(51, 31, 3, 37500.00, 0.00, 'Fuel purchase - 500 Liters'),
+(52, 31, 1, 0.00, 37500.00, 'Payment to supplier');
 
 --
 -- Indexes for dumped tables
@@ -1041,7 +1072,7 @@ ALTER TABLE `voucher_items`
 -- AUTO_INCREMENT for table `activity_logs`
 --
 ALTER TABLE `activity_logs`
-  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=28;
+  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=29;
 
 --
 -- AUTO_INCREMENT for table `attendance`
@@ -1053,7 +1084,7 @@ ALTER TABLE `attendance`
 -- AUTO_INCREMENT for table `chart_of_accounts`
 --
 ALTER TABLE `chart_of_accounts`
-  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=39;
+  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=66;
 
 --
 -- AUTO_INCREMENT for table `credit_payments`
@@ -1197,13 +1228,13 @@ ALTER TABLE `users`
 -- AUTO_INCREMENT for table `vouchers`
 --
 ALTER TABLE `vouchers`
-  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=24;
+  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=32;
 
 --
 -- AUTO_INCREMENT for table `voucher_items`
 --
 ALTER TABLE `voucher_items`
-  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=37;
+  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=53;
 
 --
 -- Constraints for dumped tables

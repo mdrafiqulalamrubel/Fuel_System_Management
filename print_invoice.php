@@ -2,24 +2,56 @@
 // No need for session_start() here - it's already in database.php
 require_once 'config/database.php';
 
-if(!isset($_SESSION['last_invoice'])) {
+// If invoice_no is passed via GET, fetch that invoice instead of session
+if(isset($_GET['invoice_no'])) {
+    $invoice_no = $_GET['invoice_no'];
+    $stmt = $pdo->prepare("
+        SELECT s.*, p.product_name 
+        FROM sales s 
+        JOIN fuel_products p ON s.product_id = p.id 
+        WHERE s.invoice_no = ?
+    ");
+    $stmt->execute([$invoice_no]);
+    $sale = $stmt->fetch();
+    
+    if($sale) {
+        $invoice = [
+            'invoice_no' => $sale['invoice_no'],
+            'customer_name' => $sale['customer_name'],
+            'customer_phone' => $sale['customer_phone'],
+            'date' => $sale['sale_date'],
+            'product_id' => $sale['product_id'],
+            'product' => $sale['product_name'],
+            'quantity' => $sale['quantity_liters'],
+            'unit_price' => $sale['unit_price'],
+            'subtotal' => $sale['subtotal'],
+            'vat' => $sale['vat_amount'],
+            'tax' => $sale['tax_amount'],
+            'total' => $sale['total_amount'],
+            'received' => $sale['received_amount'],
+            'change' => $sale['change_amount'],
+            'sale_type' => $sale['sale_type']
+        ];
+        $_SESSION['last_invoice'] = $invoice;
+    } else {
+        die("Invoice not found!");
+    }
+} elseif(!isset($_SESSION['last_invoice'])) {
     echo "<h3>No invoice to print</h3>";
     echo "<p>Please complete a sale first.</p>";
     echo '<button onclick="window.location.href=\'pos.php\'" class="btn btn-primary">Go to POS</button>';
     exit;
+} else {
+    $invoice = $_SESSION['last_invoice'];
 }
 
-$invoice = $_SESSION['last_invoice'];
-
-// Get product name from database
-$product_name = 'Fuel';
+// Get product name from database if needed
+$product_name = $invoice['product'] ?? 'Fuel';
 if(isset($invoice['product_id']) && $invoice['product_id']) {
     $stmt = $pdo->prepare("SELECT product_name FROM fuel_products WHERE id = ?");
     $stmt->execute([$invoice['product_id']]);
     $product = $stmt->fetch();
     $product_name = $product['product_name'] ?? $invoice['product'] ?? 'Fuel';
-} else {
-    $product_name = $invoice['product'] ?? 'Fuel';
 }
 
 // Get company settings
@@ -176,6 +208,11 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
             color: white;
         }
         
+        .btn-reprint {
+            background: #ff9800;
+            color: white;
+        }
+        
         .button-bar {
             position: fixed;
             bottom: 20px;
@@ -208,6 +245,13 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
         .print-progress.show {
             display: block;
         }
+        
+        .reprint-info {
+            text-align: center;
+            margin-top: 10px;
+            font-size: 8px;
+            color: #999;
+        }
     </style>
 </head>
 <body>
@@ -216,8 +260,11 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
         <button class="btn btn-print" onclick="printInvoice()">
             🖨️ Print Invoice
         </button>
+        <button class="btn btn-reprint" onclick="reprintInvoice()">
+            🔄 Re-print
+        </button>
         <button class="btn btn-back" onclick="goBackToPOS()">
-            ◀ Back to POS Screen
+            ◀ Back to POS
         </button>
     </div>
     
@@ -303,6 +350,10 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
         </div>
     </div>
     
+    <div class="reprint-info no-print">
+        <i class="fas fa-info-circle"></i> Original printed on: <?php echo date('d/m/Y H:i:s'); ?>
+    </div>
+    
     <script>
         let printAttempted = false;
         
@@ -310,24 +361,18 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
             if(printAttempted) return;
             printAttempted = true;
             
-            // Show progress indicator
             var progress = document.getElementById('printProgress');
             if(progress) {
                 progress.classList.add('show');
             }
             
-            // Small delay to ensure everything is ready
             setTimeout(function() {
-                // Trigger print
                 window.print();
                 
-                // After print dialog closes
                 window.onafterprint = function() {
-                    // Hide progress
                     if(progress) {
                         progress.classList.remove('show');
                     }
-                    // Ask user if they want to go back
                     if(confirm('Print completed! Do you want to go back to POS screen?')) {
                         goBackToPOS();
                     }
@@ -335,23 +380,30 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
             }, 500);
         }
         
+        function reprintInvoice() {
+            // Reset print attempt flag
+            printAttempted = false;
+            // Trigger print again
+            printInvoice();
+        }
+        
         function goBackToPOS() {
             window.location.href = 'pos.php';
         }
         
-        // Auto print when page loads
+        // Auto print when page loads (only for new sales, not for reprints from report)
+        <?php if(!isset($_GET['from_report'])): ?>
         window.onload = function() {
             setTimeout(function() {
                 printInvoice();
             }, 1000);
         };
+        <?php endif; ?>
         
-        // Handle page unload to prevent accidental navigation
         window.onbeforeunload = function() {
             return false;
         };
         
-        // Remove beforeunload after print
         window.onafterprint = function() {
             window.onbeforeunload = null;
         };

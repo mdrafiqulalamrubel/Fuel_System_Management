@@ -403,7 +403,7 @@ $days_count = $start->diff($end)->days + 1;
                 </div>
             </div>
             
-            <!-- Sales Details Table -->
+          <!-- Sales Details Table -->
             <div class="card">
                 <div class="card-header bg-dark text-white">
                     <h5><i class="fas fa-list"></i> Sales Details</h5>
@@ -423,6 +423,7 @@ $days_count = $start->diff($end)->days + 1;
                                     <th>Type</th>
                                     <th>Operator</th>
                                     <th>Customer</th>
+                                    <th class="no-print">Actions</th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -442,11 +443,19 @@ $days_count = $start->diff($end)->days + 1;
                                     </td>
                                     <td><?php echo $sale['operator_name']; ?></td>
                                     <td><?php echo $sale['customer_name'] ?: '-'; ?></td>
+                                    <td class="no-print">
+                                        <a href="print_invoice.php?invoice_no=<?php echo urlencode($sale['invoice_no']); ?>&from_report=1" 
+                                        class="btn btn-sm btn-warning" 
+                                        target="_blank"
+                                        title="Reprint Invoice">
+                                            <i class="fas fa-print"></i> Reprint
+                                        </a>
+                                    </td>
                                 </tr>
                                 <?php endforeach; ?>
                                 <?php if(empty($sales)): ?>
                                 <tr>
-                                    <td colspan="10" class="text-center text-muted">No sales found for the selected period</td>
+                                    <td colspan="11" class="text-center text-muted">No sales found for the selected period</td>
                                 </tr>
                                 <?php endif; ?>
                             </tbody>
