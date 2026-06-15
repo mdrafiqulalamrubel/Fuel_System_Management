@@ -42,7 +42,20 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['submit_adjustment'])) {
     $tank_id = $_POST['tank_id'];
     $calculation_method = $_POST['calculation_method'];
     $dip_reading = isset($_POST['dip_reading']) ? floatval($_POST['dip_reading']) : 0;
-    $physical_stock = floatval($_POST['physical_stock']);
+    
+    // Get physical stock
+    if($calculation_method == 'manual') {
+        $physical_stock = floatval($_POST['physical_stock']);
+    } else {
+        $physical_stock = floatval($_POST['dip_physical_stock']);
+        if($physical_stock == 0 && $dip_reading > 0) {
+            $stmt = $pdo->prepare("SELECT calibration_factor FROM tanks WHERE id = ?");
+            $stmt->execute([$tank_id]);
+            $calibration = $stmt->fetch()['calibration_factor'] ?? 1;
+            $physical_stock = $dip_reading * $calibration;
+        }
+    }
+    
     $reason = $_POST['reason'];
     $adjustment_type = $_POST['adjustment_type'];
     
@@ -54,44 +67,42 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['submit_adjustment'])) {
     $tank = $stmt->fetch();
     $system_stock = $tank['current_stock_liters'];
     
-    // FIXED: For dip stick method, calculate physical stock from dip reading
-    if($calculation_method == 'dip_stick' && $dip_reading > 0) {
-        $physical_stock = $dip_reading * $tank['calibration_factor'];
-    }
-    
-    // FIXED: Calculate variance correctly
+    // Calculate variance (difference)
     $variance = $system_stock - $physical_stock;
     $loss_amount = abs($variance) * $tank['purchase_rate'];
     
-    // FIXED: Better validation for manual entry
-    if($calculation_method == 'manual' && $physical_stock <= 0) {
-        $error = "Physical stock cannot be zero or negative. Please enter a valid amount.";
+    // Calculate NEW stock after adjustment
+    $new_stock = $physical_stock;  // The tank will be updated to physical stock
+    
+    if($physical_stock < 0) {
+        $error = "Physical stock cannot be negative. Please enter a valid amount.";
     }
     elseif(abs($variance) < 0.01) {
-        $error = "No difference between system stock and physical stock. No adjustment needed.";
+        $error = "No difference between system stock (" . number_format($system_stock, 2) . " L) and physical stock (" . number_format($physical_stock, 2) . " L). No adjustment needed.";
     }
     else {
         try {
             $pdo->beginTransaction();
             
+            // Insert leakage adjustment record
             $stmt = $pdo->prepare("INSERT INTO leakage_adjustments (adjustment_date, tank_id, system_stock, physical_stock, variance, dip_stick_reading, reason, adjustment_type, loss_amount, created_by, status) VALUES (CURDATE(), ?, ?, ?, ?, ?, ?, ?, ?, ?, 'approved')");
             $stmt->execute([$tank_id, $system_stock, $physical_stock, $variance, $dip_reading, $reason, $adjustment_type, $loss_amount, $user['id']]);
             $adjustment_id = $pdo->lastInsertId();
             
-            // Update tank stock
+            // FIXED: Update tank stock to the physical stock value
             $stmt = $pdo->prepare("UPDATE tanks SET current_stock_liters = ? WHERE id = ?");
             $stmt->execute([$physical_stock, $tank_id]);
             
-            // Stock ledger entry
+            // FIXED: Stock ledger entry - use the NEW stock as balance
             $quantity = abs($variance);
             $stmt = $pdo->prepare("INSERT INTO stock_ledger (product_id, tank_id, transaction_type, reference_no, out_quantity, in_quantity, balance_quantity, unit_cost) VALUES (?, ?, 'adjustment', ?, ?, ?, ?, ?)");
             
             if($variance > 0) {
-                // Loss: Stock decreased
-                $stmt->execute([$tank['product_id'], $tank_id, "LEAK-$adjustment_id", $quantity, 0, $physical_stock, $tank['purchase_rate']]);
+                // Loss: Stock decreased (out_quantity)
+                $stmt->execute([$tank['product_id'], $tank_id, "LEAK-$adjustment_id", $quantity, 0, $new_stock, $tank['purchase_rate']]);
             } else {
-                // Gain: Stock increased
-                $stmt->execute([$tank['product_id'], $tank_id, "LEAK-$adjustment_id", 0, $quantity, $physical_stock, $tank['purchase_rate']]);
+                // Gain: Stock increased (in_quantity)
+                $stmt->execute([$tank['product_id'], $tank_id, "LEAK-$adjustment_id", 0, $quantity, $new_stock, $tank['purchase_rate']]);
             }
             
             // Accounting entry
@@ -125,12 +136,12 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['submit_adjustment'])) {
             
             $pdo->commit();
             
-            $currency = 'BDT';
             $success = "Adjustment completed successfully!<br>
-                        <strong>System Stock:</strong> " . number_format($system_stock, 2) . " Liters<br>
-                        <strong>Physical Stock:</strong> " . number_format($physical_stock, 2) . " Liters<br>
-                        <strong>Variance:</strong> " . number_format(abs($variance), 2) . " Liters (" . ($variance > 0 ? 'Loss' : 'Gain') . ")<br>
-                        <strong>Amount:</strong> $currency " . number_format($loss_amount, 2);
+                        <strong>System Stock (Before):</strong> " . number_format($system_stock, 2) . " Liters<br>
+                        <strong>Physical Stock (Measured):</strong> " . number_format($physical_stock, 2) . " Liters<br>
+                        <strong>Variance:</strong> " . number_format(abs($variance), 2) . " Liters (" . ($variance > 0 ? 'LOSS' : 'GAIN') . ")<br>
+                        <strong>Amount:</strong> BDT " . number_format($loss_amount, 2) . "<br>
+                        <strong>New Stock (After):</strong> " . number_format($new_stock, 2) . " Liters";
             
         } catch(Exception $e) {
             $pdo->rollBack();
@@ -411,10 +422,8 @@ foreach($recent as $r) {
                                 <div id="manual_section" class="calculation-section active">
                                     <div class="mb-3">
                                         <label>Physical Stock (Liters) *</label>
-                                        <input type="number" name="physical_stock" id="physical_stock" class="form-control" step="0.01" placeholder="Enter measured physical stock">
-                                        <small class="warning-text" id="manualWarning" style="display:none;">
-                                            <i class="fas fa-exclamation-triangle"></i> Physical stock cannot be zero!
-                                        </small>
+                                        <input type="number" name="physical_stock" id="physical_stock" class="form-control" step="0.01" placeholder="Enter measured physical stock" value="">
+                                        <small class="text-muted">Enter the actual measured stock in liters</small>
                                     </div>
                                 </div>
                                 
@@ -432,7 +441,7 @@ foreach($recent as $r) {
                                         <label>Calculated Physical Stock (Liters)</label>
                                         <input type="text" id="calculated_stock" class="form-control" readonly>
                                     </div>
-                                    <input type="hidden" name="physical_stock" id="dip_physical_stock" value="0">
+                                    <input type="hidden" name="dip_physical_stock" id="dip_physical_stock" value="0">
                                 </div>
                                 
                                 <div class="row">
@@ -663,21 +672,19 @@ foreach($recent as $r) {
             
             document.getElementById('system_stock_display').value = systemStock.toFixed(2);
             
+            // Reset inputs
+            if(document.getElementById('calculation_method').value === 'manual') {
+                document.getElementById('physical_stock').value = '';
+            } else {
+                document.getElementById('dip_reading').value = '';
+                document.getElementById('calculated_stock').value = '';
+            }
+            
             calculateVariance();
         });
         
-        // Manual physical stock input with validation
+        // Manual physical stock input
         document.getElementById('physical_stock').addEventListener('input', function() {
-            let value = parseFloat(this.value) || 0;
-            let warning = document.getElementById('manualWarning');
-            
-            if(value <= 0) {
-                warning.style.display = 'block';
-                this.style.borderColor = '#dc3545';
-            } else {
-                warning.style.display = 'none';
-                this.style.borderColor = '#ced4da';
-            }
             calculateVariance();
         });
         
@@ -703,7 +710,8 @@ foreach($recent as $r) {
             let method = document.getElementById('calculation_method').value;
             
             if(method === 'manual') {
-                physicalStock = parseFloat(document.getElementById('physical_stock').value) || 0;
+                let physicalInput = document.getElementById('physical_stock').value;
+                physicalStock = parseFloat(physicalInput) || 0;
             } else {
                 physicalStock = parseFloat(document.getElementById('calculated_stock').value) || 0;
             }
@@ -753,38 +761,45 @@ foreach($recent as $r) {
                 return false;
             }
             
+            let physicalStock = 0;
+            
             if(method === 'manual') {
-                let physicalStock = parseFloat(document.getElementById('physical_stock').value) || 0;
-                if(physicalStock <= 0) {
+                let physicalInput = document.getElementById('physical_stock').value;
+                physicalStock = parseFloat(physicalInput);
+                
+                if(isNaN(physicalStock) || physicalInput === '') {
                     e.preventDefault();
-                    alert('❌ Physical stock cannot be zero or negative! Please enter a valid amount.');
+                    alert('❌ Please enter physical stock amount');
                     return false;
                 }
-                if(isNaN(physicalStock)) {
+                
+                if(physicalStock <= 0) {
                     e.preventDefault();
-                    alert('❌ Please enter a valid number for physical stock');
+                    alert('❌ Physical stock cannot be zero or negative. Please enter a valid amount.');
                     return false;
                 }
             } else {
-                let dipReading = parseFloat(document.getElementById('dip_reading').value) || 0;
-                if(dipReading <= 0) {
+                let dipReading = parseFloat(document.getElementById('dip_reading').value);
+                if(isNaN(dipReading) || dipReading <= 0) {
                     e.preventDefault();
                     alert('❌ Please enter a valid dip stick reading in centimeters');
                     return false;
                 }
-                let calculatedStock = document.getElementById('calculated_stock').value;
-                if(parseFloat(calculatedStock) <= 0) {
+                
+                physicalStock = parseFloat(document.getElementById('calculated_stock').value);
+                if(isNaN(physicalStock) || physicalStock <= 0) {
                     e.preventDefault();
-                    alert('❌ Calculated physical stock is zero. Please check your dip reading and calibration factor.');
+                    alert('❌ Calculated physical stock is zero or invalid. Please check your dip reading.');
                     return false;
                 }
-                document.getElementById('dip_physical_stock').value = calculatedStock;
+                document.getElementById('dip_physical_stock').value = physicalStock;
             }
             
             let variance = parseFloat(document.getElementById('variance_display').value) || 0;
             if(Math.abs(variance) < 0.01) {
                 e.preventDefault();
-                alert('⚠️ No variance detected. Adjustment not needed.');
+                let systemStock = document.getElementById('system_stock_display').value;
+                alert(`⚠️ No variance detected.\n\nSystem Stock: ${systemStock} L\nPhysical Stock: ${physicalStock.toFixed(2)} L\n\nNo adjustment needed.`);
                 return false;
             }
             
@@ -795,15 +810,25 @@ foreach($recent as $r) {
                 return false;
             }
             
-            // Confirm before submitting
+            // Show confirmation
+            let varianceType = variance > 0 ? 'LOSS 📉' : 'GAIN 📈';
+            
             let confirmMsg = `⚠️ CONFIRM ADJUSTMENT ⚠️\n\n`;
-            confirmMsg += `System Stock: ${document.getElementById('system_stock_display').value} L\n`;
-            confirmMsg += `Physical Stock: ${method === 'manual' ? document.getElementById('physical_stock').value : document.getElementById('calculated_stock').value} L\n`;
-            confirmMsg += `Variance: ${variance.toFixed(2)} L (${variance > 0 ? 'LOSS' : 'GAIN'})\n`;
-            confirmMsg += `Amount: ${document.getElementById('variance_amount').value} ${document.getElementById('variance_amount').value ? 'BDT' : ''}\n\n`;
+            confirmMsg += `📊 System Stock (Before): ${document.getElementById('system_stock_display').value} L\n`;
+            confirmMsg += `📝 Physical Stock (Measured): ${physicalStock.toFixed(2)} L\n`;
+            confirmMsg += `📉 Variance: ${Math.abs(variance).toFixed(2)} L (${varianceType})\n`;
+            confirmMsg += `💰 Amount: ${document.getElementById('variance_amount').value} ${document.getElementById('variance_amount').value ? 'BDT' : '0 BDT'}\n\n`;
+            confirmMsg += `✅ New Stock (After): ${physicalStock.toFixed(2)} L\n\n`;
+            confirmMsg += `📌 Type: ${document.querySelector('select[name="adjustment_type"] option:checked').text}\n`;
+            confirmMsg += `📝 Reason: ${reason.substring(0, 50)}${reason.length > 50 ? '...' : ''}\n\n`;
             confirmMsg += `Are you sure you want to proceed?`;
             
-            return confirm(confirmMsg);
+            if(!confirm(confirmMsg)) {
+                e.preventDefault();
+                return false;
+            }
+            
+            return true;
         });
     </script>
 </body>
