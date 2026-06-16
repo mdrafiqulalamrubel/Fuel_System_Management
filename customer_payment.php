@@ -27,6 +27,11 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['record_payment'])) {
             throw new Exception("Customer not found!");
         }
         
+        // Check if payment amount exceeds due
+        if($amount > $customer['current_balance']) {
+            throw new Exception("Payment amount (BDT " . number_format($amount, 2) . ") exceeds due balance (BDT " . number_format($customer['current_balance'], 2) . ")");
+        }
+        
         // Get pending credit sales (oldest first) where balance_due > 0
         $stmt = $pdo->prepare("
             SELECT * FROM credit_sales 
@@ -42,6 +47,7 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['record_payment'])) {
         
         $remaining_amount = $amount;
         $total_paid = 0;
+        $applied_sales = [];
         
         // Apply payment to credit sales
         foreach($credit_sales as $sale) {
@@ -65,38 +71,75 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['record_payment'])) {
             
             $remaining_amount -= $pay_amount;
             $total_paid += $pay_amount;
+            $applied_sales[] = [
+                'invoice_no' => $sale['invoice_no'],
+                'amount' => $pay_amount
+            ];
         }
         
-        // Update customer current balance (REDUCE the balance by the payment amount)
-        // IMPORTANT: If customer had Dr balance (positive), payment reduces it
+        // =====================================================
+        // FIXED: Update customer current balance
+        // =====================================================
         $stmt = $pdo->prepare("UPDATE customers SET current_balance = current_balance - ? WHERE id = ?");
         $stmt->execute([$total_paid, $customer_id]);
         
-        // Create accounting entry
-        // Get account IDs
-        $stmt = $pdo->prepare("SELECT id FROM chart_of_accounts WHERE account_code = '1000'"); // Cash
-        $cash_account = $stmt->fetch();
-        $stmt = $pdo->prepare("SELECT id FROM chart_of_accounts WHERE account_code = '1300'"); // Accounts Receivable
+        // =====================================================
+        // FIXED: Get the correct Accounts Receivable account ID
+        // =====================================================
+        $stmt = $pdo->prepare("SELECT id FROM chart_of_accounts WHERE account_code = '1300' OR account_name LIKE '%Accounts Receivable%'");
+        $stmt->execute();
         $ar_account = $stmt->fetch();
         
+        $stmt = $pdo->prepare("SELECT id FROM chart_of_accounts WHERE account_code = '1000' OR account_name LIKE '%Cash%'");
+        $stmt->execute();
+        $cash_account = $stmt->fetch();
+        
+        // =====================================================
+        // FIXED: Create accounting entry with correct AR update
+        // =====================================================
         if($cash_account && $ar_account) {
+            // Create voucher
             $voucher_no = 'RECV-' . date('YmdHis') . rand(100, 999);
+            $narration = "Payment received from {$customer['customer_name']} - Receipt: $receipt_no - Amount: BDT " . number_format($total_paid, 2);
+            
             $stmt = $pdo->prepare("INSERT INTO vouchers (voucher_no, voucher_type, date, narration, created_by, status) VALUES (?, 'receipt', ?, ?, ?, 'approved')");
-            $stmt->execute([$voucher_no, $payment_date, "Payment received from {$customer['customer_name']} - Receipt: $receipt_no - Amount: BDT $total_paid", $user['id']]);
+            $stmt->execute([$voucher_no, $payment_date, $narration, $user['id']]);
             $voucher_id = $pdo->lastInsertId();
             
-            // Debit Cash, Credit Accounts Receivable
-            $stmt = $pdo->prepare("INSERT INTO voucher_items (voucher_id, account_id, debit_amount, credit_amount, description) VALUES (?, ?, ?, ?, ?), (?, ?, ?, ?, ?)");
+            // FIXED: Debit Cash, Credit Accounts Receivable
+            // This properly reduces AR when payment is received
+            $stmt = $pdo->prepare("INSERT INTO voucher_items (voucher_id, account_id, debit_amount, credit_amount, description) VALUES 
+                (?, ?, ?, ?, ?),
+                (?, ?, ?, ?, ?)");
             $stmt->execute([
-                $voucher_id, $cash_account['id'], $total_paid, 0, "Payment received from {$customer['customer_name']}",
-                $voucher_id, $ar_account['id'], 0, $total_paid, "Customer payment applied to credit sales"
+                $voucher_id, $cash_account['id'], $total_paid, 0, "Payment received from {$customer['customer_name']} - Receipt: $receipt_no",
+                $voucher_id, $ar_account['id'], 0, $total_paid, "Customer payment applied to credit sales - Invoice: " . implode(', ', array_column($applied_sales, 'invoice_no'))
             ]);
+        } else {
+            // Create accounts if missing
+            if(!$ar_account) {
+                $stmt = $pdo->prepare("INSERT INTO chart_of_accounts (account_code, account_name, account_type, balance_type, is_active) VALUES ('1300', 'Accounts Receivable', 'asset', 'debit', 1)");
+                $stmt->execute();
+                $ar_id = $pdo->lastInsertId();
+            }
+            if(!$cash_account) {
+                $stmt = $pdo->prepare("INSERT INTO chart_of_accounts (account_code, account_name, account_type, balance_type, is_active) VALUES ('1000', 'Cash Account', 'asset', 'debit', 1)");
+                $stmt->execute();
+            }
         }
         
         $pdo->commit();
-        $success = "Payment recorded successfully! Receipt No: $receipt_no<br>
-                    Amount Paid: BDT " . number_format($total_paid, 2) . "<br>
-                    Updated Balance: BDT " . number_format($customer['current_balance'] - $total_paid, 2);
+        
+        // Get updated balance
+        $stmt = $pdo->prepare("SELECT current_balance FROM customers WHERE id = ?");
+        $stmt->execute([$customer_id]);
+        $new_balance = $stmt->fetch()['current_balance'];
+        
+        $success = "✅ Payment recorded successfully!<br>
+                    <strong>Receipt No:</strong> $receipt_no<br>
+                    <strong>Amount Paid:</strong> BDT " . number_format($total_paid, 2) . "<br>
+                    <strong>Applied to Invoices:</strong> " . implode(', ', array_column($applied_sales, 'invoice_no')) . "<br>
+                    <strong>New Balance:</strong> BDT " . number_format($new_balance, 2);
         
     } catch(Exception $e) {
         $pdo->rollBack();
@@ -111,7 +154,7 @@ $customers = $pdo->query("
     ORDER BY customer_name
 ")->fetchAll();
 
-// Get recent payments
+// Get recent payments with customer details
 $recent_payments = $pdo->query("
     SELECT cp.*, c.customer_name, c.customer_code 
     FROM credit_payments cp 
@@ -122,6 +165,7 @@ $recent_payments = $pdo->query("
 ")->fetchAll();
 
 $settings = $pdo->query("SELECT setting_key, setting_value FROM system_settings")->fetchAll(PDO::FETCH_KEY_PAIR);
+$currency = $settings['currency_symbol'] ?? 'BDT';
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -138,7 +182,10 @@ $settings = $pdo->query("SELECT setting_key, setting_value FROM system_settings"
             border-radius: 15px;
             padding: 20px;
             margin-bottom: 20px;
+            transition: transform 0.3s;
         }
+        .stats-card:hover { transform: translateY(-5px); }
+        .stats-card i { font-size: 40px; opacity: 0.5; float: right; }
     </style>
 </head>
 <body>
@@ -152,25 +199,31 @@ $settings = $pdo->query("SELECT setting_key, setting_value FROM system_settings"
             </div>
             
             <?php if($error): ?>
-                <div class="alert alert-danger"><?php echo $error; ?></div>
+                <div class="alert alert-danger alert-dismissible fade show">
+                    <i class="fas fa-exclamation-circle"></i> <?php echo $error; ?>
+                    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                </div>
             <?php endif; ?>
             <?php if($success): ?>
-                <div class="alert alert-success"><?php echo $success; ?></div>
+                <div class="alert alert-success alert-dismissible fade show">
+                    <i class="fas fa-check-circle"></i> <?php echo $success; ?>
+                    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                </div>
             <?php endif; ?>
             
             <!-- Statistics -->
             <div class="row">
                 <div class="col-md-4">
                     <div class="stats-card">
-                        <i class="fas fa-users fa-2x"></i>
+                        <i class="fas fa-users"></i>
                         <h3><?php echo count($customers); ?></h3>
                         <p>Total Customers</p>
                     </div>
                 </div>
                 <div class="col-md-4">
                     <div class="stats-card" style="background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);">
-                        <i class="fas fa-money-bill-wave fa-2x"></i>
-                        <h3>BDT <?php 
+                        <i class="fas fa-money-bill-wave"></i>
+                        <h3><?php echo $currency; ?> <?php 
                             $total_due = 0;
                             foreach($customers as $c) { $total_due += $c['current_balance']; }
                             echo number_format($total_due, 2);
@@ -180,7 +233,7 @@ $settings = $pdo->query("SELECT setting_key, setting_value FROM system_settings"
                 </div>
                 <div class="col-md-4">
                     <div class="stats-card" style="background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);">
-                        <i class="fas fa-history fa-2x"></i>
+                        <i class="fas fa-history"></i>
                         <h3><?php echo count($recent_payments); ?></h3>
                         <p>Recent Payments</p>
                     </div>
@@ -205,7 +258,7 @@ $settings = $pdo->query("SELECT setting_key, setting_value FROM system_settings"
                                                     data-balance="<?php echo $c['current_balance']; ?>"
                                                     data-name="<?php echo $c['customer_name']; ?>">
                                                 <?php echo $c['customer_name']; ?> (<?php echo $c['customer_code']; ?>) 
-                                                - Balance: BDT <?php echo number_format($c['current_balance'], 2); ?>
+                                                - Balance: <?php echo $currency; ?> <?php echo number_format($c['current_balance'], 2); ?>
                                             </option>
                                         <?php endforeach; ?>
                                     </select>
@@ -213,7 +266,7 @@ $settings = $pdo->query("SELECT setting_key, setting_value FROM system_settings"
                                 
                                 <div id="customerInfo" style="display:none;" class="alert alert-info">
                                     <strong>Customer:</strong> <span id="selected_customer_name"></span><br>
-                                    <strong>Current Due:</strong> BDT <span id="selected_due_amount">0.00</span>
+                                    <strong>Current Due:</strong> <?php echo $currency; ?> <span id="selected_due_amount">0.00</span>
                                 </div>
                                 
                                 <div class="row">
@@ -225,7 +278,7 @@ $settings = $pdo->query("SELECT setting_key, setting_value FROM system_settings"
                                     </div>
                                     <div class="col-md-6">
                                         <div class="mb-3">
-                                            <label><i class="fas fa-money-bill"></i> Amount (BDT)</label>
+                                            <label><i class="fas fa-money-bill"></i> Amount (<?php echo $currency; ?>)</label>
                                             <input type="number" name="amount" id="amount" class="form-control" step="0.01" required>
                                         </div>
                                     </div>
@@ -263,12 +316,12 @@ $settings = $pdo->query("SELECT setting_key, setting_value FROM system_settings"
                         <div class="card-body">
                             <div class="table-responsive">
                                 <table class="table table-bordered" id="paymentsTable">
-                                    <thead>
+                                    <thead class="table-dark">
                                         <tr>
                                             <th>Date</th>
                                             <th>Receipt No</th>
                                             <th>Customer</th>
-                                            <th>Amount</th>
+                                            <th class="text-end">Amount</th>
                                             <th>Method</th>
                                             <th>Notes</th>
                                         </tr>
@@ -278,14 +331,26 @@ $settings = $pdo->query("SELECT setting_key, setting_value FROM system_settings"
                                         <tr>
                                             <td><?php echo date('d/m/Y', strtotime($pay['payment_date'])); ?></td>
                                             <td><?php echo $pay['receipt_no']; ?></td>
-                                            <td><?php echo $pay['customer_name']; ?> (<?php echo $pay['customer_code']; ?>)</td>
-                                            <td class="text-success fw-bold">BDT <?php echo number_format($pay['amount'], 2); ?></td>
+                                            <td><?php echo $pay['customer_name']; ?></td>
+                                            <td class="text-end text-success fw-bold"><?php echo $currency; ?> <?php echo number_format($pay['amount'], 2); ?></td>
                                             <td><?php echo ucfirst($pay['payment_method']); ?></td>
                                             <td><?php echo $pay['notes'] ?: '-'; ?></td>
                                         </tr>
                                         <?php endforeach; ?>
                                     </tbody>
-                                 </div>
+                                    <tfoot class="table-light">
+                                        <tr class="fw-bold">
+                                            <td colspan="3" class="text-end">TOTAL:</td>
+                                            <td class="text-end text-success">
+                                                <?php 
+                                                $total_payments = array_sum(array_column($recent_payments, 'amount'));
+                                                echo $currency . ' ' . number_format($total_payments, 2);
+                                                ?>
+                                            </td>
+                                            <td colspan="2"></td>
+                                        </tr>
+                                    </tfoot>
+                                </table>
                             </div>
                         </div>
                     </div>
@@ -301,7 +366,12 @@ $settings = $pdo->query("SELECT setting_key, setting_value FROM system_settings"
         $(document).ready(function() {
             $('#paymentsTable').DataTable({
                 order: [[0, 'desc']],
-                pageLength: 10
+                pageLength: 10,
+                language: {
+                    search: "Search:",
+                    lengthMenu: "Show _MENU_ entries",
+                    info: "Showing _START_ to _END_ of _TOTAL_ entries"
+                }
             });
         });
         
@@ -317,7 +387,7 @@ $settings = $pdo->query("SELECT setting_key, setting_value FROM system_settings"
                 document.getElementById('selected_due_amount').innerText = balance.toFixed(2);
                 document.getElementById('amount').max = balance;
                 document.getElementById('amount').placeholder = 'Max: ' + balance.toFixed(2);
-                document.getElementById('amount').value = balance;
+                document.getElementById('amount').value = balance > 0 ? balance : '';
             } else {
                 document.getElementById('customerInfo').style.display = 'none';
                 document.getElementById('amount').value = '';
@@ -329,8 +399,8 @@ $settings = $pdo->query("SELECT setting_key, setting_value FROM system_settings"
             let max = parseFloat(document.getElementById('customer_id').options[document.getElementById('customer_id').selectedIndex]?.getAttribute('data-balance')) || 0;
             let amount = parseFloat(this.value) || 0;
             
-            if(amount > max) {
-                this.setCustomValidity('Amount cannot exceed due balance of BDT ' + max.toFixed(2));
+            if(amount > max && max > 0) {
+                this.setCustomValidity('Amount cannot exceed due balance of <?php echo $currency; ?> ' + max.toFixed(2));
                 this.style.borderColor = 'red';
             } else {
                 this.setCustomValidity('');

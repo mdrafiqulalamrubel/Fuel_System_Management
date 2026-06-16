@@ -2,8 +2,11 @@
 require_once 'config/database.php';
 if(!isLoggedIn()) redirect('index.php');
 
-$from_date = $_GET['from_date'] ?? date('Y-m-01');
-$to_date = $_GET['to_date'] ?? date('Y-m-t');
+// =====================================================
+// FIXED: Proper date handling - use selected dates or default to current month
+// =====================================================
+$from_date = isset($_GET['from_date']) && !empty($_GET['from_date']) ? $_GET['from_date'] : date('Y-m-01');
+$to_date = isset($_GET['to_date']) && !empty($_GET['to_date']) ? $_GET['to_date'] : date('Y-m-t');
 
 // Get income accounts (excluding duplicate from sales table)
 $incomes = $pdo->query("SELECT * FROM chart_of_accounts WHERE account_type = 'income' AND is_active = 1")->fetchAll();
@@ -59,10 +62,7 @@ foreach($expenses as $exp) {
     }
 }
 
-// Remove duplicate: Fuel Sales from chart_of_accounts already includes all sales via vouchers
-// So we DON'T need to add separately from sales table!
-
-// Optional: If you want to verify, you can check if Fuel Sales is missing and add it
+// Check if Fuel Sales exists in income data
 $has_fuel_sales = false;
 foreach($income_data as $inc) {
     if(stripos($inc['name'], 'Fuel Sales') !== false || stripos($inc['name'], 'Fuel Sale') !== false) {
@@ -71,7 +71,7 @@ foreach($income_data as $inc) {
     }
 }
 
-// If no fuel sales found in voucher entries, then add from sales table as fallback
+// If no fuel sales found in voucher entries, add from sales table
 if(!$has_fuel_sales) {
     $stmt = $pdo->prepare("SELECT COALESCE(SUM(total_amount), 0) as total_sales FROM sales WHERE DATE(sale_date) BETWEEN ? AND ?");
     $stmt->execute([$from_date, $to_date]);
@@ -81,15 +81,18 @@ if(!$has_fuel_sales) {
     }
 }
 
-// Calculate COGS from fuel_receivings (if not already in expenses)
+// Check if COGS exists in expense data
 $has_cogs = false;
 foreach($expense_data as $exp) {
-    if(stripos($exp['name'], 'COGS') !== false || stripos($exp['name'], 'Cost of Goods') !== false || stripos($exp['name'], 'Fuel Purchase') !== false) {
+    if(stripos($exp['name'], 'COGS') !== false || 
+       stripos($exp['name'], 'Cost of Goods') !== false || 
+       stripos($exp['name'], 'Fuel Purchase') !== false) {
         $has_cogs = true;
         break;
     }
 }
 
+// If no COGS found, add from fuel_receivings
 if(!$has_cogs) {
     $stmt = $pdo->prepare("SELECT COALESCE(SUM(total_amount), 0) as total_purchase FROM fuel_receivings WHERE receipt_date BETWEEN ? AND ?");
     $stmt->execute([$from_date, $to_date]);

@@ -15,6 +15,11 @@ $products = $pdo->query("SELECT * FROM fuel_products WHERE is_active = 1")->fetc
 $tanks = $pdo->query("SELECT t.*, p.product_name FROM tanks t JOIN fuel_products p ON t.product_id = p.id")->fetchAll();
 $suppliers = $pdo->query("SELECT * FROM suppliers WHERE is_active = 1 ORDER BY supplier_name")->fetchAll();
 
+// =====================================================
+// FIXED: Define supplier_list for all tabs
+// =====================================================
+$supplier_list = $pdo->query("SELECT * FROM suppliers WHERE is_active = 1 ORDER BY supplier_name")->fetchAll();
+
 // Get Chart of Accounts IDs
 $stmt = $pdo->query("SELECT id FROM chart_of_accounts WHERE account_code = '2000' LIMIT 1");
 $ap_account = $stmt->fetch(); // Accounts Payable
@@ -24,6 +29,14 @@ $cash_account = $stmt->fetch();
 
 $stmt = $pdo->query("SELECT id FROM chart_of_accounts WHERE account_code = '5000' LIMIT 1");
 $purchase_account = $stmt->fetch();
+
+// Get supplier for editing
+$edit_supplier = null;
+if(isset($_GET['edit_id'])) {
+    $stmt = $pdo->prepare("SELECT * FROM suppliers WHERE id = ?");
+    $stmt->execute([$_GET['edit_id']]);
+    $edit_supplier = $stmt->fetch();
+}
 
 // Process Add/Update Supplier
 if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['save_supplier'])) {
@@ -41,7 +54,17 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['save_supplier'])) {
     
     try {
         if($supplier_id) {
-            $stmt = $pdo->prepare("UPDATE suppliers SET supplier_code = ?, supplier_name = ?, company_name = ?, phone = ?, email = ?, address = ?, contact_person = ?, credit_limit = ?, payment_terms = ? WHERE id = ?");
+            $stmt = $pdo->prepare("UPDATE suppliers SET 
+                supplier_code = ?, 
+                supplier_name = ?, 
+                company_name = ?, 
+                phone = ?, 
+                email = ?, 
+                address = ?, 
+                contact_person = ?, 
+                credit_limit = ?, 
+                payment_terms = ? 
+                WHERE id = ?");
             $stmt->execute([$supplier_code, $supplier_name, $company_name, $phone, $email, $address, $contact_person, $credit_limit, $payment_terms, $supplier_id]);
             $success = "Supplier updated successfully!";
         } else {
@@ -49,6 +72,12 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['save_supplier'])) {
             $stmt->execute([$supplier_code, $supplier_name, $company_name, $phone, $email, $address, $contact_person, $opening_balance, $opening_balance, $credit_limit, $payment_terms]);
             $success = "Supplier added successfully!";
         }
+        
+        // Refresh supplier list after add/update
+        $supplier_list = $pdo->query("SELECT * FROM suppliers WHERE is_active = 1 ORDER BY supplier_name")->fetchAll();
+        
+        echo "<script>setTimeout(function(){ window.location.href='fuel_receiving.php?tab=suppliers'; }, 1000);</script>";
+        
     } catch(Exception $e) {
         $error = "Error: " . $e->getMessage();
     }
@@ -228,7 +257,7 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['make_payment'])) {
         }
         
         $pdo->commit();
-        $success = "Payment of $currency " . number_format($amount, 2) . " made to {$supplier['supplier_name']} successfully!";
+        $success = "Payment of " . $currency . " " . number_format($amount, 2) . " made to {$supplier['supplier_name']} successfully!";
         
     } catch(Exception $e) {
         $pdo->rollBack();
@@ -376,7 +405,7 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                                         <label>Supplier *</label>
                                         <select name="supplier_id" class="form-control" required>
                                             <option value="">-- Select Supplier --</option>
-                                            <?php foreach($suppliers as $sup): ?>
+                                            <?php foreach($supplier_list as $sup): ?>
                                                 <option value="<?php echo $sup['id']; ?>">
                                                     <?php echo htmlspecialchars($sup['supplier_name']); ?> 
                                                     (Due: <?php echo $currency; ?> <?php echo number_format($sup['current_balance'], 2); ?>)
@@ -538,58 +567,81 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
             <div class="row mt-3">
                 <div class="col-md-4">
                     <div class="card">
-                        <div class="card-header bg-primary text-white">
-                            <h5><i class="fas fa-plus"></i> Add/Edit Supplier</h5>
+                        <div class="card-header <?php echo $edit_supplier ? 'bg-warning' : 'bg-primary'; ?> text-white">
+                            <h5>
+                                <i class="fas <?php echo $edit_supplier ? 'fa-edit' : 'fa-plus'; ?>"></i> 
+                                <?php echo $edit_supplier ? 'Edit Supplier' : 'Add New Supplier'; ?>
+                            </h5>
                         </div>
                         <div class="card-body">
                             <form method="POST">
+                                <?php if($edit_supplier): ?>
+                                    <input type="hidden" name="supplier_id" value="<?php echo $edit_supplier['id']; ?>">
+                                <?php endif; ?>
+                                
                                 <div class="mb-2">
                                     <label>Supplier Code *</label>
-                                    <input type="text" name="supplier_code" class="form-control" placeholder="SUP-001" required>
+                                    <input type="text" name="supplier_code" class="form-control" 
+                                           value="<?php echo $edit_supplier['supplier_code'] ?? ''; ?>" 
+                                           placeholder="SUP-001" required>
                                 </div>
                                 <div class="mb-2">
                                     <label>Supplier Name *</label>
-                                    <input type="text" name="supplier_name" class="form-control" required>
+                                    <input type="text" name="supplier_name" class="form-control" 
+                                           value="<?php echo $edit_supplier['supplier_name'] ?? ''; ?>" 
+                                           required>
                                 </div>
                                 <div class="mb-2">
                                     <label>Company Name</label>
-                                    <input type="text" name="company_name" class="form-control">
+                                    <input type="text" name="company_name" class="form-control" 
+                                           value="<?php echo $edit_supplier['company_name'] ?? ''; ?>">
                                 </div>
                                 <div class="row">
                                     <div class="col-md-6">
                                         <label>Phone</label>
-                                        <input type="text" name="phone" class="form-control">
+                                        <input type="text" name="phone" class="form-control" 
+                                               value="<?php echo $edit_supplier['phone'] ?? ''; ?>">
                                     </div>
                                     <div class="col-md-6">
                                         <label>Email</label>
-                                        <input type="email" name="email" class="form-control">
+                                        <input type="email" name="email" class="form-control" 
+                                               value="<?php echo $edit_supplier['email'] ?? ''; ?>">
                                     </div>
                                 </div>
                                 <div class="mb-2">
                                     <label>Address</label>
-                                    <textarea name="address" class="form-control" rows="2"></textarea>
+                                    <textarea name="address" class="form-control" rows="2"><?php echo $edit_supplier['address'] ?? ''; ?></textarea>
                                 </div>
                                 <div class="mb-2">
                                     <label>Contact Person</label>
-                                    <input type="text" name="contact_person" class="form-control">
+                                    <input type="text" name="contact_person" class="form-control" 
+                                           value="<?php echo $edit_supplier['contact_person'] ?? ''; ?>">
                                 </div>
                                 <div class="row">
                                     <div class="col-md-6">
                                         <label>Opening Balance</label>
-                                        <input type="number" name="opening_balance" class="form-control" step="0.01" value="0">
+                                        <input type="number" name="opening_balance" class="form-control" step="0.01" 
+                                               value="<?php echo $edit_supplier['opening_balance'] ?? 0; ?>">
                                     </div>
                                     <div class="col-md-6">
                                         <label>Credit Limit</label>
-                                        <input type="number" name="credit_limit" class="form-control" step="0.01" value="0">
+                                        <input type="number" name="credit_limit" class="form-control" step="0.01" 
+                                               value="<?php echo $edit_supplier['credit_limit'] ?? 0; ?>">
                                     </div>
                                 </div>
                                 <div class="mb-2">
                                     <label>Payment Terms (Days)</label>
-                                    <input type="number" name="payment_terms" class="form-control" value="30">
+                                    <input type="number" name="payment_terms" class="form-control" 
+                                           value="<?php echo $edit_supplier['payment_terms'] ?? 30; ?>">
                                 </div>
-                                <button type="submit" name="save_supplier" class="btn btn-primary w-100 mt-2">
-                                    <i class="fas fa-save"></i> Save Supplier
+                                <button type="submit" name="save_supplier" class="btn <?php echo $edit_supplier ? 'btn-warning' : 'btn-primary'; ?> w-100 mt-2">
+                                    <i class="fas fa-save"></i> <?php echo $edit_supplier ? 'Update Supplier' : 'Save Supplier'; ?>
                                 </button>
+                                <?php if($edit_supplier): ?>
+                                    <a href="?tab=suppliers" class="btn btn-secondary w-100 mt-2">
+                                        <i class="fas fa-plus"></i> Add New Supplier
+                                    </a>
+                                <?php endif; ?>
                             </form>
                         </div>
                     </div>
@@ -597,8 +649,11 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                 
                 <div class="col-md-8">
                     <div class="card">
-                        <div class="card-header bg-success text-white">
+                        <div class="card-header bg-success text-white d-flex justify-content-between align-items-center">
                             <h5><i class="fas fa-building"></i> Supplier List</h5>
+                            <a href="?tab=suppliers" class="btn btn-light btn-sm">
+                                <i class="fas fa-refresh"></i> Refresh
+                            </a>
                         </div>
                         <div class="card-body">
                             <div class="table-responsive">
@@ -620,31 +675,35 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                                             <td class="text-end"><?php echo $currency; ?> <?php echo number_format($sup['credit_limit'], 2); ?></td>
                                             <td class="text-end fw-bold <?php echo $sup['current_balance'] > 0 ? 'text-danger' : 'text-success'; ?>">
                                                 <?php echo $currency; ?> <?php echo number_format($sup['current_balance'], 2); ?>
-                                            </div>
+                                            </td>
                                             <td>
                                                 <?php if($sup['is_active']): ?>
                                                     <span class="badge bg-success">Active</span>
                                                 <?php else: ?>
                                                     <span class="badge bg-secondary">Inactive</span>
                                                 <?php endif; ?>
-                                            </div>
+                                            </td>
                                             <td class="no-print">
-                                                <button class="btn btn-sm btn-warning" onclick="editSupplier(<?php echo $sup['id']; ?>)">
+                                                <a href="?tab=suppliers&edit_id=<?php echo $sup['id']; ?>" class="btn btn-sm btn-warning">
                                                     <i class="fas fa-edit"></i>
-                                                </button>
-                                             </div>
+                                                </a>
+                                                <a href="?delete_id=<?php echo $sup['id']; ?>" class="btn btn-sm btn-danger" 
+                                                   onclick="return confirm('Are you sure you want to delete this supplier?')">
+                                                    <i class="fas fa-trash"></i>
+                                                </a>
+                                            </td>
                                         </tr>
                                         <?php endforeach; ?>
                                     </tbody>
                                     <tfoot class="table-light">
                                         <tr class="fw-bold">
-                                            <td colspan="4" class="text-end">TOTAL DUE:   </div>
+                                            <td colspan="4" class="text-end">TOTAL DUE:</td>
                                             <td class="text-end text-danger">
                                                 <?php 
                                                 $total_due = array_sum(array_column($supplier_list, 'current_balance'));
                                                 echo $currency . ' ' . number_format($total_due, 2); 
                                                 ?>
-                                             </div>
+                                            </td>
                                             <td colspan="2"></td>
                                         </tr>
                                     </tfoot>
@@ -656,7 +715,9 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
             </div>
             <?php endif; ?>
             
-            <!-- Supplier Payments Tab -->
+            <!-- ===================================================== -->
+            <!-- FIXED: Supplier Payments Tab -->
+            <!-- ===================================================== -->
             <?php if($active_tab == 'payments'): ?>
             <div class="row mt-3">
                 <div class="col-md-4">
@@ -669,7 +730,7 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                                 <div class="mb-2">
                                     <label>Supplier *</label>
                                     <select name="supplier_id" class="form-control" required>
-                                        <option value="">Select Supplier</option>
+                                        <option value="">-- Select Supplier --</option>
                                         <?php foreach($supplier_list as $sup): ?>
                                             <option value="<?php echo $sup['id']; ?>">
                                                 <?php echo htmlspecialchars($sup['supplier_name']); ?> 
@@ -735,21 +796,21 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                                             <td><?php echo date('d-m-Y', strtotime($pay['payment_date'])); ?></td>
                                             <td><?php echo htmlspecialchars($pay['supplier_name']); ?></td>
                                             <td class="text-end text-danger"><?php echo $currency; ?> <?php echo number_format($pay['amount'], 2); ?></td>
-                                            <td><?php echo ucfirst($pay['payment_method']); ?></div>
+                                            <td><?php echo ucfirst($pay['payment_method']); ?></td>
                                             <td><?php echo $pay['reference_no']; ?></td>
-                                            <td><?php echo htmlspecialchars(substr($pay['notes'], 0, 30)); ?>...</div>
+                                            <td><?php echo htmlspecialchars(substr($pay['notes'], 0, 30)); ?>...</td>
                                         </tr>
                                         <?php endforeach; ?>
                                     </tbody>
                                     <tfoot class="table-light">
                                         <tr class="fw-bold">
-                                            <td colspan="2" class="text-end">TOTAL PAYMENTS:   </div>
+                                            <td colspan="2" class="text-end">TOTAL PAYMENTS:</td>
                                             <td class="text-end text-danger">
                                                 <?php 
                                                 $total_payments = array_sum(array_column($payments, 'amount'));
                                                 echo $currency . ' ' . number_format($total_payments, 2); 
                                                 ?>
-                                             </div>
+                                            </td>
                                             <td colspan="3"></td>
                                         </tr>
                                     </tfoot>
@@ -761,217 +822,219 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
             </div>
             <?php endif; ?>
             
-    <!-- Reports Tab -->
-    <?php if($active_tab == 'reports'): ?>
+            <!-- Reports Tab -->
+            <?php if($active_tab == 'reports'): ?>
 
-    <!-- Supplier Summary Section -->
-    <div class="card mt-3">
-        <div class="card-header bg-primary text-white">
-            <h5><i class="fas fa-chart-line"></i> Supplier Summary</h5>
-        </div>
-        <div class="card-body">
-            <div class="row">
-                <div class="col-md-3 text-center mb-3">
-                    <div class="border rounded p-3 bg-light">
-                        <i class="fas fa-building fa-2x text-primary mb-2"></i>
-                        <h3 class="mb-0"><?php echo $supplier_summary['total_suppliers']; ?></h3>
-                        <small class="text-muted">Total Suppliers</small>
-                    </div>
+            <!-- Supplier Summary Section -->
+            <div class="card mt-3">
+                <div class="card-header bg-primary text-white">
+                    <h5><i class="fas fa-chart-line"></i> Supplier Summary</h5>
                 </div>
-                <div class="col-md-3 text-center mb-3">
-                    <div class="border rounded p-3 bg-light">
-                        <i class="fas fa-money-bill-wave fa-2x text-danger mb-2"></i>
-                        <h3 class="mb-0 text-danger"><?php echo $currency; ?> <?php echo number_format($supplier_summary['total_due'], 2); ?></h3>
-                        <small class="text-muted">Total Due</small>
-                    </div>
-                </div>
-                <div class="col-md-3 text-center mb-3">
-                    <div class="border rounded p-3 bg-light">
-                        <i class="fas fa-chart-line fa-2x text-warning mb-2"></i>
-                        <h3 class="mb-0"><?php echo number_format($summary['total_shortage'], 2); ?> L</h3>
-                        <small class="text-muted">Total Shortage</small>
-                    </div>
-                </div>
-                <div class="col-md-3 text-center mb-3">
-                    <div class="border rounded p-3 bg-light">
-                        <i class="fas fa-credit-card fa-2x text-success mb-2"></i>
-                        <h3 class="mb-0 text-success"><?php echo $currency; ?> <?php echo number_format($supplier_summary['total_credit_limit'], 2); ?></h3>
-                        <small class="text-muted">Total Credit Limit</small>
+                <div class="card-body">
+                    <div class="row">
+                        <div class="col-md-3 text-center mb-3">
+                            <div class="border rounded p-3 bg-light">
+                                <i class="fas fa-building fa-2x text-primary mb-2"></i>
+                                <h3 class="mb-0"><?php echo $supplier_summary['total_suppliers']; ?></h3>
+                                <small class="text-muted">Total Suppliers</small>
+                            </div>
+                        </div>
+                        <div class="col-md-3 text-center mb-3">
+                            <div class="border rounded p-3 bg-light">
+                                <i class="fas fa-money-bill-wave fa-2x text-danger mb-2"></i>
+                                <h3 class="mb-0 text-danger"><?php echo $currency; ?> <?php echo number_format($supplier_summary['total_due'], 2); ?></h3>
+                                <small class="text-muted">Total Due</small>
+                            </div>
+                        </div>
+                        <div class="col-md-3 text-center mb-3">
+                            <div class="border rounded p-3 bg-light">
+                                <i class="fas fa-chart-line fa-2x text-warning mb-2"></i>
+                                <h3 class="mb-0"><?php echo number_format($summary['total_shortage'], 2); ?> L</h3>
+                                <small class="text-muted">Total Shortage</small>
+                            </div>
+                        </div>
+                        <div class="col-md-3 text-center mb-3">
+                            <div class="border rounded p-3 bg-light">
+                                <i class="fas fa-credit-card fa-2x text-success mb-2"></i>
+                                <h3 class="mb-0 text-success"><?php echo $currency; ?> <?php echo number_format($supplier_summary['total_credit_limit'], 2); ?></h3>
+                                <small class="text-muted">Total Credit Limit</small>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
-        </div>
-    </div>
 
-    <!-- Receiving Summary Section -->
-    <div class="card mt-3">
-        <div class="card-header bg-success text-white">
-            <h5><i class="fas fa-oil-can"></i> Receiving Summary (<?php echo date('d M Y', strtotime($from_date)); ?> - <?php echo date('d M Y', strtotime($to_date)); ?>)</h5>
-        </div>
-        <div class="card-body">
-            <div class="row">
-                <div class="col-md-3 text-center mb-3">
-                    <div class="border rounded p-3 bg-info text-white">
-                        <i class="fas fa-tachometer-alt fa-2x mb-2"></i>
-                                        <h3 class="mb-0"><?php echo number_format($summary['total_liters'], 2); ?> L</h3>
-                        <small>Total Liters Received</small>
-                    </div>
+            <!-- Receiving Summary Section -->
+            <div class="card mt-3">
+                <div class="card-header bg-success text-white">
+                    <h5><i class="fas fa-oil-can"></i> Receiving Summary (<?php echo date('d M Y', strtotime($from_date)); ?> - <?php echo date('d M Y', strtotime($to_date)); ?>)</h5>
                 </div>
-                <div class="col-md-3 text-center mb-3">
-                    <div class="border rounded p-3 bg-warning">
-                        <i class="fas fa-exclamation-triangle fa-2x mb-2"></i>
-                        <h3 class="mb-0"><?php echo number_format($summary['total_shortage'], 2); ?> L</h3>
-                        <small>Total Shortage</small>
-                    </div>
-                </div>
-                <div class="col-md-3 text-center mb-3">
-                    <div class="border rounded p-3 bg-primary text-white">
-                        <i class="fas fa-dollar-sign fa-2x mb-2"></i>
-                        <h3 class="mb-0"><?php echo $currency; ?> <?php echo number_format($summary['total_amount'], 2); ?></h3>
-                        <small>Total Amount</small>
-                    </div>
-                </div>
-                <div class="col-md-3 text-center mb-3">
-                    <div class="border rounded p-3 bg-danger text-white">
-                        <i class="fas fa-clock fa-2x mb-2"></i>
-                        <h3 class="mb-0"><?php echo $currency; ?> <?php echo number_format($summary['total_due'], 2); ?></h3>
-                        <small>Outstanding Due</small>
+                <div class="card-body">
+                    <div class="row">
+                        <div class="col-md-3 text-center mb-3">
+                            <div class="border rounded p-3 bg-info text-white">
+                                <i class="fas fa-tachometer-alt fa-2x mb-2"></i>
+                                                <h3 class="mb-0"><?php echo number_format($summary['total_liters'], 2); ?> L</h3>
+                                <small>Total Liters Received</small>
+                            </div>
+                        </div>
+                        <div class="col-md-3 text-center mb-3">
+                            <div class="border rounded p-3 bg-warning">
+                                <i class="fas fa-exclamation-triangle fa-2x mb-2"></i>
+                                <h3 class="mb-0"><?php echo number_format($summary['total_shortage'], 2); ?> L</h3>
+                                <small>Total Shortage</small>
+                            </div>
+                        </div>
+                        <div class="col-md-3 text-center mb-3">
+                            <div class="border rounded p-3 bg-primary text-white">
+                                <i class="fas fa-dollar-sign fa-2x mb-2"></i>
+                                <h3 class="mb-0"><?php echo $currency; ?> <?php echo number_format($summary['total_amount'], 2); ?></h3>
+                                <small>Total Amount</small>
+                            </div>
+                        </div>
+                        <div class="col-md-3 text-center mb-3">
+                            <div class="border rounded p-3 bg-danger text-white">
+                                <i class="fas fa-clock fa-2x mb-2"></i>
+                                <h3 class="mb-0"><?php echo $currency; ?> <?php echo number_format($summary['total_due'], 2); ?></h3>
+                                <small>Outstanding Due</small>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
-        </div>
-    </div>
 
-    <!-- Supplier-wise Due Report -->
-    <div class="card mt-3">
-        <div class="card-header bg-dark text-white">
-            <h5><i class="fas fa-list"></i> Supplier-wise Due Report</h5>
-        </div>
-        <div class="card-body">
-            <div class="table-responsive">
-                <table class="table table-bordered table-hover" id="supplierDueTable">
-                    <thead class="table-dark">
-                        <tr>
-                            <th>SL</th>
-                            <th>Supplier Code</th>
-                            <th>Supplier Name</th>
-                            <th>Company</th>
-                            <th>Phone</th>
-                            <th class="text-end">Credit Limit</th>
-                            <th class="text-end">Current Due</th>
-                            <th>Payment Terms</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <?php 
-                        $supplier_due_list = $pdo->query("SELECT * FROM suppliers WHERE is_active = 1 ORDER BY current_balance DESC")->fetchAll();
-                        $sl = 1;
-                        foreach($supplier_due_list as $sup): 
-                        ?>
-                        <tr>
-                            <td class="text-center"><?php echo $sl++; ?></td>
-                            <td><?php echo $sup['supplier_code']; ?></td>
-                            <td><strong><?php echo htmlspecialchars($sup['supplier_name']); ?></strong></td>
-                            <td><?php echo htmlspecialchars($sup['company_name']); ?></td>
-                            <td><?php echo $sup['phone']; ?></td>
-                            <td class="text-end"><?php echo $currency; ?> <?php echo number_format($sup['credit_limit'], 2); ?></td>
-                            <td class="text-end fw-bold <?php echo $sup['current_balance'] > 0 ? 'text-danger' : 'text-success'; ?>">
-                                <?php echo $currency; ?> <?php echo number_format($sup['current_balance'], 2); ?>
-                            </td>
-                            <td class="text-center"><?php echo $sup['payment_terms']; ?> days</td>
-                        </tr>
-                        <?php endforeach; ?>
-                        <?php if(empty($supplier_due_list)): ?>
-                        <tr>
-                            <td colspan="8" class="text-center text-muted">No suppliers found</td>
-                        </tr>
-                        <?php endif; ?>
-                    </tbody>
-                    <tfoot class="table-light">
-                        <tr class="fw-bold">
-                            <td colspan="6" class="text-end">TOTAL DUE:</td>
-                            <td class="text-end text-danger">
+            <!-- Supplier-wise Due Report -->
+            <div class="card mt-3">
+                <div class="card-header bg-dark text-white">
+                    <h5><i class="fas fa-list"></i> Supplier-wise Due Report</h5>
+                </div>
+                <div class="card-body">
+                    <div class="table-responsive">
+                        <table class="table table-bordered table-hover" id="supplierDueTable">
+                            <thead class="table-dark">
+                                <tr>
+                                    <th>SL</th>
+                                    <th>Supplier Code</th>
+                                    <th>Supplier Name</th>
+                                    <th>Company</th>
+                                    <th>Phone</th>
+                                    <th class="text-end">Credit Limit</th>
+                                    <th class="text-end">Current Due</th>
+                                    <th>Payment Terms</th>
+                                </tr>
+                            </thead>
+                            <tbody>
                                 <?php 
-                                $total_due_sum = array_sum(array_column($supplier_due_list, 'current_balance'));
-                                echo $currency . ' ' . number_format($total_due_sum, 2); 
+                                $supplier_due_list = $pdo->query("SELECT * FROM suppliers WHERE is_active = 1 ORDER BY current_balance DESC")->fetchAll();
+                                $sl = 1;
+                                foreach($supplier_due_list as $sup): 
                                 ?>
-                            </td>
-                            <td></td>
-                        </tr>
-                    </tfoot>
-                </table>
-            </div>
-        </div>
-    </div>
-
-    <!-- Recent Receivings Summary -->
-    <div class="card mt-3">
-        <div class="card-header bg-info text-white">
-            <h5><i class="fas fa-history"></i> Recent Receiving History</h5>
-        </div>
-        <div class="card-body">
-            <div class="table-responsive">
-                <table class="table table-bordered table-hover" id="recentReceivingsTable">
-                    <thead class="table-dark">
-                        <tr>
-                            <th>Date</th>
-                            <th>Receipt No</th>
-                            <th>Supplier</th>
-                            <th>Product</th>
-                            <th class="text-end">Quantity (L)</th>
-                            <th class="text-end">Unit Price</th>
-                            <th class="text-end">Total Amount</th>
-                            <th>Payment Status</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <?php 
-                        $recent_receivings = $pdo->query("
-                            SELECT fr.*, p.product_name, s.supplier_name 
-                            FROM fuel_receivings fr 
-                            JOIN fuel_products p ON fr.product_id = p.id 
-                            LEFT JOIN suppliers s ON fr.supplier_id = s.id 
-                            ORDER BY fr.receipt_date DESC 
-                            LIMIT 20
-                        ")->fetchAll();
-                        foreach($recent_receivings as $r): 
-                        ?>
-                        <tr>
-                            <td><?php echo date('d-m-Y', strtotime($r['receipt_date'])); ?></td>
-                            <td><?php echo $r['receipt_no']; ?></td>
-                            <td><?php echo htmlspecialchars($r['supplier_name']); ?></td>
-                            <td><?php echo $r['product_name']; ?></td>
-                            <td class="text-end"><?php echo number_format($r['actual_quantity'], 2); ?> L</td>
-                            <td class="text-end"><?php echo $currency; ?> <?php echo number_format($r['unit_price'], 2); ?></td>
-                            <td class="text-end"><?php echo $currency; ?> <?php echo number_format($r['total_amount'], 2); ?></td>
-                            <td class="text-center">
-                                <?php if($r['payment_status'] == 'paid'): ?>
-                                    <span class="badge bg-success">Paid</span>
-                                <?php elseif($r['payment_status'] == 'partial'): ?>
-                                    <span class="badge bg-info">Partial</span>
-                                <?php else: ?>
-                                    <span class="badge bg-warning">Pending</span>
+                                <tr>
+                                    <td class="text-center"><?php echo $sl++; ?></td>
+                                    <td><?php echo $sup['supplier_code']; ?></td>
+                                    <td><strong><?php echo htmlspecialchars($sup['supplier_name']); ?></strong></td>
+                                    <td><?php echo htmlspecialchars($sup['company_name']); ?></td>
+                                    <td><?php echo $sup['phone']; ?></td>
+                                    <td class="text-end"><?php echo $currency; ?> <?php echo number_format($sup['credit_limit'], 2); ?></td>
+                                    <td class="text-end fw-bold <?php echo $sup['current_balance'] > 0 ? 'text-danger' : 'text-success'; ?>">
+                                        <?php echo $currency; ?> <?php echo number_format($sup['current_balance'], 2); ?>
+                                    </td>
+                                    <td class="text-center"><?php echo $sup['payment_terms']; ?> days</td>
+                                </tr>
+                                <?php endforeach; ?>
+                                <?php if(empty($supplier_due_list)): ?>
+                                <tr>
+                                    <td colspan="8" class="text-center text-muted">No suppliers found</td>
+                                </tr>
                                 <?php endif; ?>
-                            </td>
-                        </tr>
-                        <?php endforeach; ?>
-                    </tbody>
-                </table>
+                            </tbody>
+                            <tfoot class="table-light">
+                                <tr class="fw-bold">
+                                    <td colspan="6" class="text-end">TOTAL DUE:</td>
+                                    <td class="text-end text-danger">
+                                        <?php 
+                                        $total_due_sum = array_sum(array_column($supplier_due_list, 'current_balance'));
+                                        echo $currency . ' ' . number_format($total_due_sum, 2); 
+                                        ?>
+                                    </td>
+                                    <td></td>
+                                </tr>
+                            </tfoot>
+                        </table>
+                    </div>
+                </div>
             </div>
+
+            <!-- Recent Receivings Summary -->
+            <div class="card mt-3">
+                <div class="card-header bg-info text-white">
+                    <h5><i class="fas fa-history"></i> Recent Receiving History</h5>
+                </div>
+                <div class="card-body">
+                    <div class="table-responsive">
+                        <table class="table table-bordered table-hover" id="recentReceivingsTable">
+                            <thead class="table-dark">
+                                <tr>
+                                    <th>Date</th>
+                                    <th>Receipt No</th>
+                                    <th>Supplier</th>
+                                    <th>Product</th>
+                                    <th class="text-end">Quantity (L)</th>
+                                    <th class="text-end">Unit Price</th>
+                                    <th class="text-end">Total Amount</th>
+                                    <th>Payment Status</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <?php 
+                                $recent_receivings = $pdo->query("
+                                    SELECT fr.*, p.product_name, s.supplier_name 
+                                    FROM fuel_receivings fr 
+                                    JOIN fuel_products p ON fr.product_id = p.id 
+                                    LEFT JOIN suppliers s ON fr.supplier_id = s.id 
+                                    ORDER BY fr.receipt_date DESC 
+                                    LIMIT 20
+                                ")->fetchAll();
+                                foreach($recent_receivings as $r): 
+                                ?>
+                                <tr>
+                                    <td><?php echo date('d-m-Y', strtotime($r['receipt_date'])); ?></td>
+                                    <td><?php echo $r['receipt_no']; ?></td>
+                                    <td><?php echo htmlspecialchars($r['supplier_name']); ?></td>
+                                    <td><?php echo $r['product_name']; ?></td>
+                                    <td class="text-end"><?php echo number_format($r['actual_quantity'], 2); ?> L</td>
+                                    <td class="text-end"><?php echo $currency; ?> <?php echo number_format($r['unit_price'], 2); ?></td>
+                                    <td class="text-end"><?php echo $currency; ?> <?php echo number_format($r['total_amount'], 2); ?></td>
+                                    <td class="text-center">
+                                        <?php if($r['payment_status'] == 'paid'): ?>
+                                            <span class="badge bg-success">Paid</span>
+                                        <?php elseif($r['payment_status'] == 'partial'): ?>
+                                            <span class="badge bg-info">Partial</span>
+                                        <?php else: ?>
+                                            <span class="badge bg-warning">Pending</span>
+                                        <?php endif; ?>
+                                    </td>
+                                </tr>
+                                <?php endforeach; ?>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Monthly Summary Chart -->
+            <div class="card mt-3">
+                <div class="card-header bg-secondary text-white">
+                    <h5><i class="fas fa-chart-bar"></i> Monthly Receiving Summary</h5>
+                </div>
+                <div class="card-body">
+                    <canvas id="monthlyChart" style="height: 300px;"></canvas>
+                </div>
+            </div>
+
+            <?php endif; ?>
         </div>
     </div>
-
-    <!-- Monthly Summary Chart -->
-    <div class="card mt-3">
-        <div class="card-header bg-secondary text-white">
-            <h5><i class="fas fa-chart-bar"></i> Monthly Receiving Summary</h5>
-        </div>
-        <div class="card-body">
-            <canvas id="monthlyChart" style="height: 300px;"></canvas>
-        </div>
-    </div>
-
-    <?php endif; ?>
     
     <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
@@ -1015,6 +1078,17 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                 }
             });
             <?php endif; ?>
+            
+            // Initialize additional DataTables
+            $('#supplierDueTable, #recentReceivingsTable').DataTable({
+                order: [[0, 'asc']],
+                pageLength: 10,
+                language: {
+                    search: "Search:",
+                    lengthMenu: "Show _MENU_ entries",
+                    info: "Showing _START_ to _END_ of _TOTAL_ entries"
+                }
+            });
         });
         
         function calcShortage() { 
@@ -1037,17 +1111,6 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
         function editSupplier(id) {
             window.location.href = '?tab=suppliers&edit_id=' + id;
         }
-
-        // Initialize additional DataTables
-        $('#supplierDueTable, #recentReceivingsTable').DataTable({
-            order: [[0, 'asc']],
-            pageLength: 10,
-            language: {
-                search: "Search:",
-                lengthMenu: "Show _MENU_ entries",
-                info: "Showing _START_ to _END_ of _TOTAL_ entries"
-            }
-        });
 
         // Monthly Chart for Receivings
         <?php

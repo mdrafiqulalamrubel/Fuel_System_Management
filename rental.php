@@ -7,6 +7,25 @@ $error = '';
 $success = '';
 $active_tab = isset($_GET['tab']) ? $_GET['tab'] : 'tenants';
 
+// Get Chart of Accounts IDs
+$stmt = $pdo->query("SELECT id FROM chart_of_accounts WHERE account_code = '1000' OR account_name LIKE '%Cash%' LIMIT 1");
+$cash_account = $stmt->fetch();
+
+$stmt = $pdo->query("SELECT id FROM chart_of_accounts WHERE account_code = '1100' OR account_name LIKE '%Bank%' LIMIT 1");
+$bank_account = $stmt->fetch();
+
+$stmt = $pdo->query("SELECT id FROM chart_of_accounts WHERE account_code = '4100' OR account_name LIKE '%Rental Income%' LIMIT 1");
+$rental_income = $stmt->fetch();
+
+// Create Rental Income account if not exists
+if(!$rental_income) {
+    $stmt = $pdo->prepare("INSERT INTO chart_of_accounts (account_code, account_name, account_type, balance_type, is_active) VALUES ('4100', 'Rental Income', 'income', 'credit', 1)");
+    $stmt->execute();
+    $rental_income_id = $pdo->lastInsertId();
+} else {
+    $rental_income_id = $rental_income['id'];
+}
+
 // Add Tenant
 if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['save_tenant'])) {
     $tenant_name = $_POST['tenant_name'];
@@ -56,7 +75,9 @@ if(isset($_GET['delete_id'])) {
     }
 }
 
-// Record Rent Payment
+// =====================================================
+// FIXED: Record Rent Payment with Full Accounting
+// =====================================================
 if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['record_payment'])) {
     $tenant_id = $_POST['tenant_id'];
     $payment_date = $_POST['payment_date'];
@@ -74,39 +95,128 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['record_payment'])) {
         $month = date('Y-m', strtotime($month . '-01'));
     }
     
-    try {
-        $pdo->beginTransaction();
-        
-        // Check if already paid for this month
-        $stmt = $pdo->prepare("SELECT id FROM rent_payments WHERE tenant_id = ? AND month = ?");
-        $stmt->execute([$tenant_id, $month]);
-        if($stmt->fetch()) {
-            throw new Exception("Payment for month " . date('F Y', strtotime($month . '-01')) . " already recorded!");
+    // =====================================================
+    // FIXED: Get tenant details FIRST
+    // =====================================================
+    $stmt = $pdo->prepare("SELECT * FROM tenants WHERE id = ?");
+    $stmt->execute([$tenant_id]);
+    $tenant = $stmt->fetch();
+    
+    if(!$tenant) {
+        $error = "Tenant not found!";
+    } else {
+        try {
+            $pdo->beginTransaction();
+            
+            // Check if already paid for this month
+            $stmt = $pdo->prepare("SELECT id FROM rent_payments WHERE tenant_id = ? AND month = ?");
+            $stmt->execute([$tenant_id, $month]);
+            if($stmt->fetch()) {
+                throw new Exception("Payment for month " . date('F Y', strtotime($month . '-01')) . " already recorded!");
+            }
+            
+            // Insert payment
+            $stmt = $pdo->prepare("INSERT INTO rent_payments (tenant_id, payment_date, month, amount, late_fee, payment_method, notes, receipt_no) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
+            $stmt->execute([$tenant_id, $payment_date, $month, $amount, $late_fee, $payment_method, $notes, $receipt_no]);
+            
+            // =====================================================
+            // Create FULL Accounting Entry
+            // =====================================================
+            
+            // Get account IDs
+            $stmt = $pdo->prepare("SELECT id FROM chart_of_accounts WHERE account_code = '4100' OR account_name LIKE '%Rental Income%' LIMIT 1");
+            $stmt->execute();
+            $rental_income_account = $stmt->fetch();
+            
+            // If Rental Income account doesn't exist, create it
+            if(!$rental_income_account) {
+                $stmt = $pdo->prepare("INSERT INTO chart_of_accounts (account_code, account_name, account_type, balance_type, is_active) VALUES ('4100', 'Rental Income', 'income', 'credit', 1)");
+                $stmt->execute();
+                $rental_income_id = $pdo->lastInsertId();
+            } else {
+                $rental_income_id = $rental_income_account['id'];
+            }
+            
+            // Determine which asset account to use (Cash or Bank)
+            if($payment_method == 'cash') {
+                $stmt = $pdo->prepare("SELECT id FROM chart_of_accounts WHERE account_code = '1000' OR account_name LIKE '%Cash%' LIMIT 1");
+            } else {
+                $stmt = $pdo->prepare("SELECT id FROM chart_of_accounts WHERE account_code = '1100' OR account_name LIKE '%Bank%' LIMIT 1");
+            }
+            $stmt->execute();
+            $asset_account = $stmt->fetch();
+            
+            if(!$asset_account) {
+                // If no account found, create default
+                if($payment_method == 'cash') {
+                    $stmt = $pdo->prepare("INSERT INTO chart_of_accounts (account_code, account_name, account_type, balance_type, is_active) VALUES ('1000', 'Cash Account', 'asset', 'debit', 1)");
+                } else {
+                    $stmt = $pdo->prepare("INSERT INTO chart_of_accounts (account_code, account_name, account_type, balance_type, is_active) VALUES ('1100', 'Bank Account', 'asset', 'debit', 1)");
+                }
+                $stmt->execute();
+                $asset_id = $pdo->lastInsertId();
+            } else {
+                $asset_id = $asset_account['id'];
+            }
+            
+            // Create voucher
+            $voucher_no = 'RENT-' . date('YmdHis') . rand(100, 999);
+            $narration = "Rent collection from {$tenant['tenant_name']} - Month: " . date('F Y', strtotime($month . '-01')) . " - Receipt: $receipt_no";
+            
+            $stmt = $pdo->prepare("INSERT INTO vouchers (voucher_no, voucher_type, date, narration, created_by, status) VALUES (?, 'receipt', ?, ?, ?, 'approved')");
+            $stmt->execute([$voucher_no, $payment_date, $narration, $user['id']]);
+            $voucher_id = $pdo->lastInsertId();
+            
+            // =====================================================
+            // Dr. Cash/Bank, Cr. Rental Income
+            // =====================================================
+            $total_amount = $amount + $late_fee;
+            
+            $stmt = $pdo->prepare("INSERT INTO voucher_items (voucher_id, account_id, debit_amount, credit_amount, description) VALUES 
+                (?, ?, ?, ?, ?),
+                (?, ?, ?, ?, ?)");
+            $stmt->execute([
+                $voucher_id, $asset_id, $total_amount, 0, "Rent received from tenant - $receipt_no",
+                $voucher_id, $rental_income_id, 0, $total_amount, "Rental income for " . date('F Y', strtotime($month . '-01'))
+            ]);
+            
+            $pdo->commit();
+            $success = "Payment recorded! Receipt: $receipt_no<br>
+                        <strong>Amount:</strong> BDT " . number_format($total_amount, 2) . "<br>
+                        <strong>Income Posted:</strong> Rental Income (Cr) | Cash/Bank (Dr)";
+            
+        } catch(Exception $e) {
+            $pdo->rollBack();
+            $error = "Error: " . $e->getMessage();
         }
-        
-        // Insert payment
-        $stmt = $pdo->prepare("INSERT INTO rent_payments (tenant_id, payment_date, month, amount, late_fee, payment_method, notes, receipt_no) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
-        $stmt->execute([$tenant_id, $payment_date, $month, $amount, $late_fee, $payment_method, $notes, $receipt_no]);
-        
-        // Create accounting entry
-        $voucher_no = 'RENT-' . date('YmdHis');
-        $stmt = $pdo->prepare("INSERT INTO vouchers (voucher_no, voucher_type, date, narration, created_by, status) VALUES (?, 'receipt', ?, ?, ?, 'approved')");
-        $stmt->execute([$voucher_no, $payment_date, "Rent collection from tenant ID: $tenant_id - Month: " . date('F Y', strtotime($month . '-01')), $user['id']]);
-        
-        $pdo->commit();
-        $success = "Payment recorded! Receipt: $receipt_no";
-        
-    } catch(Exception $e) {
-        $pdo->rollBack();
-        $error = "Error: " . $e->getMessage();
     }
 }
 
 // Delete Payment
 if(isset($_GET['delete_payment'])) {
-    $stmt = $pdo->prepare("DELETE FROM rent_payments WHERE id = ?");
-    if($stmt->execute([$_GET['delete_payment']])) {
+    try {
+        $pdo->beginTransaction();
+        
+        // Get payment details first
+        $stmt = $pdo->prepare("SELECT * FROM rent_payments WHERE id = ?");
+        $stmt->execute([$_GET['delete_payment']]);
+        $payment = $stmt->fetch();
+        
+        if($payment) {
+            // Delete the payment
+            $stmt = $pdo->prepare("DELETE FROM rent_payments WHERE id = ?");
+            $stmt->execute([$_GET['delete_payment']]);
+            
+            // Also delete associated voucher if exists
+            $stmt = $pdo->prepare("DELETE FROM vouchers WHERE narration LIKE ?");
+            $stmt->execute(['%' . $payment['receipt_no'] . '%']);
+        }
+        
+        $pdo->commit();
         $success = "Payment deleted successfully!";
+    } catch(Exception $e) {
+        $pdo->rollBack();
+        $error = "Error deleting payment: " . $e->getMessage();
     }
 }
 
@@ -132,24 +242,25 @@ foreach($tenants as $tenant) {
     $paid_months_list = [];
     foreach($paid_records as $pr) {
         $paid_amount += $pr['amount'];
-        $month_key = (strlen($pr['month']) == 7) ? $pr['month'] : date('Y-m', strtotime($pr['month']));
+        $month_key = (strlen($pr['month']) == 7) ? $pr['month'] : date('Y-m', strtotime($pr['month'] . '-01'));
         $paid_months_list[] = $month_key;
     }
     
-    // Calculate due amount properly
+    // Calculate due amount
     $due_amount = 0;
     $due_months = [];
     
-    // Get current date
+    // Get current date - use the first day of current month for comparison
     $now = new DateTime();
     $now->modify('first day of this month');
     $current_month_key = $now->format('Y-m');
     
-    // Get agreement start date
+    // Determine start date
     if($tenant['agreement_start'] && $tenant['agreement_start'] != '0000-00-00') {
         $start = new DateTime($tenant['agreement_start']);
         $start->modify('first day of this month');
     } else {
+        // If no agreement date, start from the earliest payment or current month
         if(!empty($paid_months_list)) {
             $start = new DateTime(min($paid_months_list) . '-01');
             $start->modify('first day of this month');
@@ -168,10 +279,12 @@ foreach($tenants as $tenant) {
         $month_date->modify("+$i months");
         $month_key = $month_date->format('Y-m');
         
+        // Skip if month is after current month
         if($month_key > $current_month_key) {
             continue;
         }
         
+        // Check if this month has been paid
         $is_paid = in_array($month_key, $paid_months_list);
         
         if(!$is_paid) {
@@ -193,6 +306,20 @@ $total_monthly_rent = 0;
 foreach($tenants as $t) { $total_monthly_rent += $t['monthly_rent']; }
 $total_due = 0;
 foreach($tenant_dues as $due) { $total_due += $due['due_amount']; }
+
+// Get rental income for accounting summary
+$stmt = $pdo->prepare("
+    SELECT COALESCE(SUM(credit_amount - debit_amount), 0) as total_rental_income 
+    FROM voucher_items vi 
+    JOIN vouchers v ON vi.voucher_id = v.id 
+    WHERE vi.account_id = ? AND v.status = 'approved'
+");
+$stmt->execute([$rental_income_id]);
+$total_rental_income = $stmt->fetch()['total_rental_income'] ?? 0;
+
+// Get currency setting
+$settings = $pdo->query("SELECT setting_key, setting_value FROM system_settings")->fetchAll(PDO::FETCH_KEY_PAIR);
+$currency = $settings['currency_symbol'] ?? 'BDT';
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -217,7 +344,7 @@ foreach($tenant_dues as $due) { $total_due += $due['due_amount']; }
         .due-badge { background: #dc3545; color: white; padding: 3px 8px; border-radius: 20px; font-size: 11px; display: inline-block; margin: 2px; }
         .paid-badge { background: #28a745; color: white; padding: 3px 8px; border-radius: 20px; font-size: 11px; }
         
-        /* ===== FIXED TAB STYLES ===== */
+        /* Tab Styles */
         .nav-tabs {
             border-bottom: 2px solid #dee2e6;
             margin-bottom: 20px;
@@ -252,7 +379,6 @@ foreach($tenant_dues as $due) { $total_due += $due['due_amount']; }
             margin-right: 8px;
         }
         
-        /* Active tab colors */
         .nav-tabs .nav-link:first-child.active {
             background: #007bff !important;
         }
@@ -264,7 +390,6 @@ foreach($tenant_dues as $due) { $total_due += $due['due_amount']; }
         .nav-tabs .nav-link:nth-child(3).active {
             background: #dc3545 !important;
         }
-        /* ===== END FIXED TAB STYLES ===== */
     </style>
 </head>
 <body>
@@ -287,7 +412,7 @@ foreach($tenant_dues as $due) { $total_due += $due['due_amount']; }
             <?php endif; ?>
             <?php if($success): ?>
                 <div class="alert alert-success alert-dismissible fade show">
-                    <i class="fas fa-check-circle"></i> <?php echo htmlspecialchars($success); ?>
+                    <i class="fas fa-check-circle"></i> <?php echo $success; ?>
                     <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
                 </div>
             <?php endif; ?>
@@ -304,14 +429,14 @@ foreach($tenant_dues as $due) { $total_due += $due['due_amount']; }
                 <div class="col-md-3">
                     <div class="stats-card" style="background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);">
                         <i class="fas fa-money-bill-wave"></i>
-                        <h3>BDT <?php echo number_format($total_monthly_rent, 0); ?></h3>
+                        <h3><?php echo $currency; ?> <?php echo number_format($total_monthly_rent, 0); ?></h3>
                         <p>Monthly Revenue</p>
                     </div>
                 </div>
                 <div class="col-md-3">
                     <div class="stats-card" style="background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);">
                         <i class="fas fa-exclamation-triangle"></i>
-                        <h3>BDT <?php echo number_format($total_due, 0); ?></h3>
+                        <h3><?php echo $currency; ?> <?php echo number_format($total_due, 0); ?></h3>
                         <p>Total Due</p>
                     </div>
                 </div>
@@ -324,7 +449,34 @@ foreach($tenant_dues as $due) { $total_due += $due['due_amount']; }
                 </div>
             </div>
             
-            <!-- Tabs - FIXED COLORS -->
+            <!-- Rental Income Summary -->
+            <div class="row">
+                <div class="col-md-12">
+                    <div class="card mb-3">
+                        <div class="card-header bg-success text-white">
+                            <h5><i class="fas fa-chart-line"></i> Rental Income Summary (Accounting)</h5>
+                        </div>
+                        <div class="card-body">
+                            <div class="row">
+                                <div class="col-md-4 text-center">
+                                    <h4><?php echo $currency; ?> <?php echo number_format($total_rental_income, 2); ?></h4>
+                                    <small>Total Rental Income (Posted to P&L)</small>
+                                </div>
+                                <div class="col-md-4 text-center">
+                                    <h4 class="text-success"><?php echo $currency; ?> <?php echo number_format($total_rental_income, 2); ?></h4>
+                                    <small>Cash/Bank Balance Increase</small>
+                                </div>
+                                <div class="col-md-4 text-center">
+                                    <h4><?php echo count($payments); ?></h4>
+                                    <small>Total Payment Transactions</small>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Tabs -->
             <ul class="nav nav-tabs mb-3">
                 <li class="nav-item">
                     <a class="nav-link <?php echo $active_tab == 'tenants' ? 'active' : ''; ?>" href="?tab=tenants">
@@ -352,7 +504,7 @@ foreach($tenant_dues as $due) { $total_due += $due['due_amount']; }
                 <div class="card-body">
                     <div class="table-responsive">
                         <table class="table table-bordered" id="tenantsTable">
-                            <thead>
+                            <thead class="table-dark">
                                 <tr>
                                     <th>ID</th>
                                     <th>Tenant Name</th>
@@ -371,11 +523,11 @@ foreach($tenant_dues as $due) { $total_due += $due['due_amount']; }
                                     <td><?php echo $tenant['id']; ?></td>
                                     <td><strong><?php echo htmlspecialchars($tenant['tenant_name']); ?></strong></td>
                                     <td><?php echo htmlspecialchars($tenant['shop_no']); ?></td>
-                                    <td>BDT <?php echo number_format($tenant['monthly_rent'], 2); ?></td>
+                                    <td><?php echo $currency; ?> <?php echo number_format($tenant['monthly_rent'], 2); ?></td>
                                     <td><?php echo htmlspecialchars($tenant['phone']); ?></td>
                                     <td><?php echo $tenant['agreement_start'] && $tenant['agreement_start'] != '0000-00-00' ? date('d/m/Y', strtotime($tenant['agreement_start'])) : '-'; ?></td>
                                     <td class="<?php echo $due > 0 ? 'text-danger fw-bold' : 'text-success'; ?>">
-                                        <?php echo $due > 0 ? 'BDT ' . number_format($due, 2) : 'Fully Paid'; ?>
+                                        <?php echo $due > 0 ? $currency . ' ' . number_format($due, 2) : 'Fully Paid'; ?>
                                     </td>
                                     <td>
                                         <button class="btn btn-sm btn-warning" onclick="editTenant(
@@ -398,11 +550,11 @@ foreach($tenant_dues as $due) { $total_due += $due['due_amount']; }
                                         <a href="?delete_id=<?php echo $tenant['id']; ?>" class="btn btn-sm btn-danger" onclick="return confirm('Deactivate this tenant?')">
                                             <i class="fas fa-trash"></i> Delete
                                         </a>
-                                      </div>
-                                   </tr
+                                    </td>
+                                </tr>
                                 <?php endforeach; ?>
                             </tbody>
-                        </div>
+                        </table>
                     </div>
                 </div>
             </div>
@@ -417,7 +569,7 @@ foreach($tenant_dues as $due) { $total_due += $due['due_amount']; }
                 <div class="card-body">
                     <div class="table-responsive">
                         <table class="table table-bordered" id="paymentsTable">
-                            <thead>
+                            <thead class="table-dark">
                                 <tr>
                                     <th>Date</th>
                                     <th>Receipt No</th>
@@ -435,21 +587,29 @@ foreach($tenant_dues as $due) { $total_due += $due['due_amount']; }
                                 <tr>
                                     <td><?php echo date('d/m/Y', strtotime($payment['payment_date'])); ?></td>
                                     <td><?php echo $payment['receipt_no']; ?></td>
-                                    <td><?php echo htmlspecialchars($payment['tenant_name']); ?></div>
-                                    <td><?php echo htmlspecialchars($payment['shop_no']); ?></div>
-                                    <td><?php echo date('F Y', strtotime($payment['month'] . '-01')); ?></div>
-                                    <td>BDT <?php echo number_format($payment['amount'], 2); ?></div>
-                                    <td>BDT <?php echo number_format($payment['late_fee'], 2); ?></div>
-                                    <td><?php echo ucfirst($payment['payment_method'] ?? 'Cash'); ?></div>
+                                    <td><?php echo htmlspecialchars($payment['tenant_name']); ?></td>
+                                    <td><?php echo htmlspecialchars($payment['shop_no']); ?></td>
+                                    <td><?php echo date('F Y', strtotime($payment['month'] . '-01')); ?></td>
+                                    <td><?php echo $currency; ?> <?php echo number_format($payment['amount'], 2); ?></td>
+                                    <td><?php echo $currency; ?> <?php echo number_format($payment['late_fee'], 2); ?></td>
+                                    <td><?php echo ucfirst($payment['payment_method'] ?? 'Cash'); ?></td>
                                     <td>
-                                        <a href="?delete_payment=<?php echo $payment['id']; ?>&tab=payments" class="btn btn-sm btn-danger" onclick="return confirm('Delete this payment?')">
+                                        <a href="?delete_payment=<?php echo $payment['id']; ?>&tab=payments" class="btn btn-sm btn-danger" onclick="return confirm('Delete this payment? This will also remove accounting entry.')">
                                             <i class="fas fa-trash"></i>
                                         </a>
-                                      </div>
-                                   </tr
+                                    </td>
+                                </tr>
                                 <?php endforeach; ?>
                             </tbody>
-                        </div>
+                            <tfoot class="table-light">
+                                <tr class="fw-bold">
+                                    <td colspan="5" class="text-end">TOTAL:</td>
+                                    <td><?php echo $currency; ?> <?php echo number_format(array_sum(array_column($payments, 'amount')), 2); ?></td>
+                                    <td><?php echo $currency; ?> <?php echo number_format(array_sum(array_column($payments, 'late_fee')), 2); ?></td>
+                                    <td colspan="2"></td>
+                                </tr>
+                            </tfoot>
+                        </table>
                     </div>
                 </div>
             </div>
@@ -464,7 +624,7 @@ foreach($tenant_dues as $due) { $total_due += $due['due_amount']; }
                 <div class="card-body">
                     <div class="table-responsive">
                         <table class="table table-bordered" id="duesTable">
-                            <thead>
+                            <thead class="table-dark">
                                 <tr>
                                     <th>Tenant</th>
                                     <th>Shop No</th>
@@ -481,11 +641,11 @@ foreach($tenant_dues as $due) { $total_due += $due['due_amount']; }
                                     if($due_info['due_amount'] > 0):
                                 ?>
                                 <tr>
-                                    <td><strong><?php echo htmlspecialchars($tenant['tenant_name']); ?></strong></div>
-                                    <td><?php echo htmlspecialchars($tenant['shop_no']); ?></div>
-                                    <td>BDT <?php echo number_format($tenant['monthly_rent'], 2); ?>}</div>
-                                    <td>BDT <?php echo number_format($due_info['paid_amount'], 2); ?>}</div>
-                                    <td class="text-danger fw-bold">BDT <?php echo number_format($due_info['due_amount'], 2); ?>}</div>
+                                    <td><strong><?php echo htmlspecialchars($tenant['tenant_name']); ?></strong></td>
+                                    <td><?php echo htmlspecialchars($tenant['shop_no']); ?></td>
+                                    <td><?php echo $currency; ?> <?php echo number_format($tenant['monthly_rent'], 2); ?></td>
+                                    <td><?php echo $currency; ?> <?php echo number_format($due_info['paid_amount'], 2); ?></td>
+                                    <td class="text-danger fw-bold"><?php echo $currency; ?> <?php echo number_format($due_info['due_amount'], 2); ?></td>
                                     <td>
                                         <?php 
                                         $months_display = array_slice($due_info['due_months'], 0, 6);
@@ -499,23 +659,30 @@ foreach($tenant_dues as $due) { $total_due += $due['due_amount']; }
                                             echo '<span class="paid-badge">No due months</span>';
                                         }
                                         ?>
-                                      </div>
+                                    </td>
                                     <td>
                                         <button class="btn btn-sm btn-success" onclick="recordPayment(<?php echo $tenant['id']; ?>, '<?php echo addslashes($tenant['tenant_name']); ?>', <?php echo $tenant['monthly_rent']; ?>)">
                                             <i class="fas fa-money-bill"></i> Receive Payment
                                         </button>
-                                      </div>
-                                   </tr
+                                    </td>
+                                </tr>
                                 <?php endif; endforeach; ?>
-                                <?php if(empty(array_filter($tenant_dues, fn($d)=>$d['due_amount']>0))): ?>
+                                <?php if(empty(array_filter($tenant_dues, function($d) { return $d['due_amount'] > 0; }))): ?>
                                 <tr>
                                     <td colspan="7" class="text-center text-success">
                                         <i class="fas fa-check-circle"></i> All tenants are up to date! No dues pending.
-                                     </div>
-                                   </tr
+                                    </td>
+                                </tr>
                                 <?php endif; ?>
                             </tbody>
-                        </div>
+                            <tfoot class="table-light">
+                                <tr class="fw-bold">
+                                    <td colspan="4" class="text-end">TOTAL DUE:</td>
+                                    <td class="text-danger"><?php echo $currency; ?> <?php echo number_format(array_sum(array_column($tenant_dues, 'due_amount')), 2); ?></td>
+                                    <td colspan="2"></td>
+                                </tr>
+                            </tfoot>
+                        </table>
                     </div>
                 </div>
             </div>
@@ -545,11 +712,11 @@ foreach($tenant_dues as $due) { $total_due += $due['due_amount']; }
                         </div>
                         <div class="row mt-2">
                             <div class="col-md-6">
-                                <label>Monthly Rent (BDT) *</label>
+                                <label>Monthly Rent (<?php echo $currency; ?>) *</label>
                                 <input type="number" name="monthly_rent" class="form-control" step="0.01" required>
                             </div>
                             <div class="col-md-6">
-                                <label>Security Deposit (BDT)</label>
+                                <label>Security Deposit (<?php echo $currency; ?>)</label>
                                 <input type="number" name="security_deposit" class="form-control" step="0.01" value="0">
                             </div>
                         </div>
@@ -614,11 +781,11 @@ foreach($tenant_dues as $due) { $total_due += $due['due_amount']; }
                         </div>
                         <div class="row mt-2">
                             <div class="col-md-6">
-                                <label>Amount (BDT)</label>
+                                <label>Amount (<?php echo $currency; ?>)</label>
                                 <input type="number" name="amount" id="payment_amount" class="form-control" step="0.01" required>
                             </div>
                             <div class="col-md-6">
-                                <label>Late Fee (BDT)</label>
+                                <label>Late Fee (<?php echo $currency; ?>)</label>
                                 <input type="number" name="late_fee" class="form-control" step="0.01" value="0">
                             </div>
                         </div>
@@ -634,6 +801,10 @@ foreach($tenant_dues as $due) { $total_due += $due['due_amount']; }
                         <div class="mt-2">
                             <label>Notes (Optional)</label>
                             <textarea name="notes" class="form-control" rows="2"></textarea>
+                        </div>
+                        <div class="alert alert-info mt-2">
+                            <i class="fas fa-info-circle"></i> 
+                            <strong>Accounting Entry:</strong> Dr. Cash/Bank | Cr. Rental Income
                         </div>
                     </div>
                     <div class="modal-footer">
@@ -668,11 +839,11 @@ foreach($tenant_dues as $due) { $total_due += $due['due_amount']; }
                         </div>
                         <div class="row mt-2">
                             <div class="col-md-6">
-                                <label>Monthly Rent (BDT)</label>
+                                <label>Monthly Rent (<?php echo $currency; ?>)</label>
                                 <input type="number" name="monthly_rent" id="edit_monthly_rent" class="form-control" step="0.01" required>
                             </div>
                             <div class="col-md-6">
-                                <label>Security Deposit (BDT)</label>
+                                <label>Security Deposit (<?php echo $currency; ?>)</label>
                                 <input type="number" name="security_deposit" id="edit_security_deposit" class="form-control" step="0.01">
                             </div>
                         </div>

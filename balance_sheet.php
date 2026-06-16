@@ -4,6 +4,12 @@ if(!isLoggedIn()) redirect('index.php');
 
 $as_on = $_GET['as_on'] ?? date('Y-m-d');
 
+// =====================================================
+// FIXED: Define $incomes and $expenses variables
+// =====================================================
+$incomes = $pdo->query("SELECT * FROM chart_of_accounts WHERE account_type = 'income' AND is_active = 1")->fetchAll();
+$expenses = $pdo->query("SELECT * FROM chart_of_accounts WHERE account_type = 'expense' AND is_active = 1")->fetchAll();
+
 // Get all accounts with balances
 $accounts = $pdo->query("SELECT * FROM chart_of_accounts WHERE is_active = 1 ORDER BY account_type, account_code")->fetchAll();
 
@@ -41,13 +47,16 @@ foreach($accounts as $acc) {
     ];
 }
 
-// Calculate Net Profit/Loss for the current period (year-to-date)
-$from_date = date('Y-01-01'); // Start of financial year
-$to_date = $as_on;
+// =====================================================
+// Calculate Net Profit/Loss using SAME method as P&L
+// Use the current period (month) not year-to-date
+// =====================================================
+$from_date = date('Y-m-01'); // First day of current month
+$to_date = $as_on; // Selected date
 
-// Get total income from income accounts
+// Get total income from income accounts ONLY from vouchers
 $stmt = $pdo->prepare("
-    SELECT COALESCE(SUM(CASE WHEN ca.balance_type = 'credit' THEN vi.credit_amount - vi.debit_amount ELSE vi.debit_amount - vi.credit_amount END), 0) as total
+    SELECT COALESCE(SUM(vi.credit_amount - vi.debit_amount), 0) as total
     FROM voucher_items vi 
     JOIN vouchers v ON vi.voucher_id = v.id 
     JOIN chart_of_accounts ca ON vi.account_id = ca.id
@@ -58,15 +67,9 @@ $stmt = $pdo->prepare("
 $stmt->execute([$from_date, $to_date]);
 $total_income = floatval($stmt->fetch()['total'] ?? 0);
 
-// Also get direct sales from sales table (if not recorded in vouchers)
-$stmt = $pdo->prepare("SELECT COALESCE(SUM(total_amount), 0) as total FROM sales WHERE DATE(sale_date) BETWEEN ? AND ?");
-$stmt->execute([$from_date, $to_date]);
-$direct_sales = floatval($stmt->fetch()['total'] ?? 0);
-$total_income = max($total_income, $direct_sales);
-
-// Get total expenses from expense accounts
+// Get total expenses from expense accounts ONLY from vouchers
 $stmt = $pdo->prepare("
-    SELECT COALESCE(SUM(CASE WHEN ca.balance_type = 'debit' THEN vi.debit_amount - vi.credit_amount ELSE vi.credit_amount - vi.debit_amount END), 0) as total
+    SELECT COALESCE(SUM(vi.debit_amount - vi.credit_amount), 0) as total
     FROM voucher_items vi 
     JOIN vouchers v ON vi.voucher_id = v.id 
     JOIN chart_of_accounts ca ON vi.account_id = ca.id
@@ -77,12 +80,41 @@ $stmt = $pdo->prepare("
 $stmt->execute([$from_date, $to_date]);
 $total_expense = floatval($stmt->fetch()['total'] ?? 0);
 
-// Also get COGS from fuel_receivings
-$stmt = $pdo->prepare("SELECT COALESCE(SUM(total_amount), 0) as total FROM fuel_receivings WHERE receipt_date BETWEEN ? AND ?");
-$stmt->execute([$from_date, $to_date]);
-$direct_cogs = floatval($stmt->fetch()['total'] ?? 0);
-$total_expense = max($total_expense, $direct_cogs);
+// Check if Fuel Sales exists in income data
+$has_fuel_sales = false;
+foreach($incomes as $inc) {
+    if(stripos($inc['account_name'], 'Fuel Sales') !== false) {
+        $has_fuel_sales = true;
+        break;
+    }
+}
 
+// If no fuel sales found in vouchers, add from sales table
+if(!$has_fuel_sales) {
+    $stmt = $pdo->prepare("SELECT COALESCE(SUM(total_amount), 0) as total_sales FROM sales WHERE DATE(sale_date) BETWEEN ? AND ?");
+    $stmt->execute([$from_date, $to_date]);
+    $fuel_sales = $stmt->fetch()['total_sales'] ?? 0;
+    $total_income += $fuel_sales;
+}
+
+// Check if COGS exists in expense data
+$has_cogs = false;
+foreach($expenses as $exp) {
+    if(stripos($exp['account_name'], 'Fuel Purchase') !== false || stripos($exp['account_name'], 'COGS') !== false) {
+        $has_cogs = true;
+        break;
+    }
+}
+
+// If no COGS found, add from fuel_receivings
+if(!$has_cogs) {
+    $stmt = $pdo->prepare("SELECT COALESCE(SUM(total_amount), 0) as total_purchase FROM fuel_receivings WHERE receipt_date BETWEEN ? AND ?");
+    $stmt->execute([$from_date, $to_date]);
+    $cogs = $stmt->fetch()['total_purchase'] ?? 0;
+    $total_expense += $cogs;
+}
+
+// Calculate Net Profit/Loss
 $net_profit_loss = $total_income - $total_expense;
 
 // Separate assets, liabilities, equity
@@ -94,32 +126,14 @@ $total_assets = array_sum(array_column($assets, 'balance'));
 $total_liabilities = array_sum(array_column($liabilities, 'balance'));
 $total_equity_from_accounts = array_sum(array_column($equity, 'balance'));
 
-// If no equity accounts exist, create a default Retained Earnings
-if(empty($equity) && $total_assets > 0) {
-    // Check if Retained Earnings exists
-    $stmt = $pdo->query("SELECT id FROM chart_of_accounts WHERE account_name = 'Retained Earnings' LIMIT 1");
-    if(!$stmt->fetch()) {
-        // Add Retained Earnings account if missing
-        $pdo->query("INSERT INTO chart_of_accounts (account_code, account_name, account_type, balance_type, is_active) VALUES ('3200', 'Retained Earnings', 'equity', 'credit', 1)");
-    }
-    // Add to equity array
-    $equity['retained_earnings'] = [
-        'name' => 'Retained Earnings',
-        'type' => 'equity',
-        'balance' => 0
-    ];
-    $total_equity_from_accounts = 0;
-}
-
 // Calculate final equity including Net Profit/Loss
-// For a proper balance sheet: Assets = Liabilities + (Equity + Net Profit/Loss)
 $final_equity = $total_equity_from_accounts + $net_profit_loss;
 $total_liabilities_equity = $total_liabilities + $final_equity;
 
-// If balance doesn't match, adjust with a balancing figure
+// If balance doesn't match, show suspense account
 $difference = $total_assets - $total_liabilities_equity;
+$suspense_account = null;
 if(abs($difference) > 0.01) {
-    // Add a "Balance Adjustment" or "Suspense Account" to show the difference
     $suspense_account = [
         'name' => 'Balance Adjustment (Suspense)',
         'type' => 'equity',
@@ -323,7 +337,11 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                                                     <br><small class="text-muted">(Current Period)</small>
                                                 </td>
                                                 <td class="text-end fw-bold">
-                                                    <?php echo $currency; ?> <?php echo number_format(abs($net_profit_loss), 2); ?>
+                                                    <?php if($net_profit_loss >= 0): ?>
+                                                        <?php echo $currency; ?> <?php echo number_format($net_profit_loss, 2); ?>
+                                                    <?php else: ?>
+                                                        (<?php echo $currency; ?> <?php echo number_format(abs($net_profit_loss), 2); ?>)
+                                                    <?php endif; ?>
                                                 </td>
                                             </tr>
                                             
@@ -366,17 +384,6 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                             <?php endif; ?>
                         </strong>
                     </div>
-                    
-                    <!-- Explanation for new users -->
-                    <?php if($total_liabilities_equity == 0 && $total_assets > 0): ?>
-                    <div class="alert alert-warning text-center mt-2">
-                        <i class="fas fa-info-circle"></i> 
-                        <strong>Why is my balance sheet not balanced?</strong><br>
-                        You need to set up opening balances for Equity accounts. 
-                        <a href="accounting.php?tab=chart" class="alert-link">Click here to add Owner's Equity account</a> 
-                        with an opening balance equal to your total assets.
-                    </div>
-                    <?php endif; ?>
                     
                     <div class="text-center mt-3">
                         <hr>

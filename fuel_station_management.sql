@@ -3,7 +3,7 @@
 -- https://www.phpmyadmin.net/
 --
 -- Host: 127.0.0.1
--- Generation Time: Jun 14, 2026 at 10:20 AM
+-- Generation Time: Jun 16, 2026 at 09:34 AM
 -- Server version: 10.4.32-MariaDB
 -- PHP Version: 8.2.12
 
@@ -35,13 +35,6 @@ CREATE TABLE `activity_logs` (
   `ip_address` varchar(45) DEFAULT NULL,
   `created_at` timestamp NOT NULL DEFAULT current_timestamp()
 ) ENGINE=InnoDB DEFAULT CHARSET=latin1 COLLATE=latin1_swedish_ci;
-
---
--- Dumping data for table `activity_logs`
---
-
-INSERT INTO `activity_logs` (`id`, `user_id`, `action`, `description`, `ip_address`, `created_at`) VALUES
-(1, 1, 'login', 'User logged in', '::1', '2026-06-14 07:10:07');
 
 -- --------------------------------------------------------
 
@@ -81,13 +74,13 @@ CREATE TABLE `chart_of_accounts` (
 --
 
 INSERT INTO `chart_of_accounts` (`id`, `account_code`, `account_name`, `account_type`, `parent_id`, `opening_balance`, `balance_type`, `is_active`) VALUES
-(1, '1000', 'Cash Account', 'asset', NULL, 0.00, 'debit', 1),
-(2, '1100', 'Bank Account', 'asset', NULL, 0.00, 'debit', 1),
-(3, '1200', 'Fuel Inventory', 'asset', NULL, 0.00, 'debit', 1),
+(1, '1000', 'Cash Account', 'asset', NULL, 50000.00, 'debit', 1),
+(2, '1100', 'Bank Account', 'asset', NULL, 100000.00, 'debit', 1),
+(3, '1200', 'Fuel Inventory', 'asset', NULL, 2217699.50, 'debit', 1),
 (4, '1300', 'Accounts Receivable', 'asset', NULL, 0.00, 'debit', 1),
 (5, '2000', 'Accounts Payable', 'liability', NULL, 0.00, 'credit', 1),
 (6, '2100', 'Loan Payable', 'liability', NULL, 0.00, 'credit', 1),
-(7, '3000', 'Owner\'s Equity', 'equity', NULL, 0.00, 'credit', 1),
+(7, '3000', 'Owner\'s Equity', 'equity', NULL, 2367699.50, 'credit', 1),
 (8, '4000', 'Fuel Sales', 'income', NULL, 0.00, 'credit', 1),
 (9, '4100', 'Rental Income', 'income', NULL, 0.00, 'credit', 1),
 (10, '5000', 'Fuel Purchase', 'expense', NULL, 0.00, 'debit', 1),
@@ -99,7 +92,8 @@ INSERT INTO `chart_of_accounts` (`id`, `account_code`, `account_name`, `account_
 (57, '4200', 'Service Income', 'income', NULL, 0.00, 'credit', 1),
 (60, '5300', 'Rent Expense', 'expense', NULL, 0.00, 'debit', 1),
 (61, '5400', 'Maintenance Expense', 'expense', NULL, 0.00, 'debit', 1),
-(62, '5500', 'Fuel Purchase Expense', 'expense', NULL, 0.00, 'debit', 1);
+(62, '5500', 'Fuel Purchase Expense', 'expense', NULL, 0.00, 'debit', 1),
+(68, '1201', 'Fuel Inventory Adjustment', 'asset', NULL, 0.00, 'debit', 1);
 
 -- --------------------------------------------------------
 
@@ -249,13 +243,6 @@ CREATE TABLE `fuel_receivings` (
   `due_amount` decimal(15,2) DEFAULT 0.00
 ) ENGINE=InnoDB DEFAULT CHARSET=latin1 COLLATE=latin1_swedish_ci;
 
---
--- Dumping data for table `fuel_receivings`
---
-
-INSERT INTO `fuel_receivings` (`id`, `receipt_no`, `receipt_date`, `supplier_name`, `tanker_no`, `challan_no`, `product_id`, `tank_id`, `expected_quantity`, `actual_quantity`, `shortage`, `freight_cost`, `freight_deduction`, `unit_price`, `total_amount`, `status`, `approved_by`, `supplier_id`, `payment_status`, `paid_amount`, `due_amount`) VALUES
-(1, 'RCV-20260614091249', '2026-06-01', 'Padma Oil Company', 'Tank01', '10001', 1, 1, 9000.00, 8750.00, 250.00, 0.00, 0.00, 82.00, 717500.00, 'approved', 1, NULL, 'pending', 0.00, 0.00);
-
 -- --------------------------------------------------------
 
 --
@@ -331,9 +318,9 @@ CREATE TABLE `nozzles` (
 --
 
 INSERT INTO `nozzles` (`id`, `nozzle_name`, `tank_id`, `opening_meter`, `closing_meter`, `is_active`) VALUES
-(1, 'Nozzle Diesel 01', 1, 0.00, 0.00, 1),
+(1, 'Nozzle Diesel 01', 1, 0.00, 150.00, 1),
 (4, 'Nozzle Disel 02', 1, 0.00, 0.00, 1),
-(5, 'Nozzle Disel 03', 1, 0.00, 10.00, 1),
+(5, 'Nozzle Disel 03', 1, 0.00, 0.00, 1),
 (6, 'CNG Nozzle 01 ', 6, 0.00, 0.00, 1),
 (7, 'CNG Nozzle 02 ', 6, 0.00, 0.00, 1),
 (8, 'CNG Nozzle 01 ', 6, 0.00, 0.00, 1);
@@ -442,7 +429,7 @@ CREATE TABLE `sales` (
 --
 
 INSERT INTO `sales` (`id`, `invoice_no`, `sale_date`, `shift_id`, `nozzle_id`, `operator_id`, `customer_name`, `customer_phone`, `sale_type`, `product_id`, `quantity_liters`, `unit_price`, `subtotal`, `vat_amount`, `tax_amount`, `total_amount`, `received_amount`, `change_amount`, `credit_due_date`, `is_printed`) VALUES
-(1, 'INV-20260614092841', '2026-06-14 13:28:41', 1, 5, 1, '', '', 'cash', 1, 10.00, 85.00, 850.00, 0.00, 0.00, 850.00, 0.00, -850.00, NULL, 0);
+(1, 'INV-20260616093336', '2026-06-16 13:33:36', 1, 1, 1, '', '', 'cash', 1, 150.00, 105.00, 15750.00, 0.00, 0.00, 15750.00, 0.00, -15750.00, NULL, 0);
 
 -- --------------------------------------------------------
 
@@ -515,8 +502,7 @@ CREATE TABLE `stock_ledger` (
 --
 
 INSERT INTO `stock_ledger` (`id`, `product_id`, `tank_id`, `transaction_date`, `transaction_type`, `reference_no`, `in_quantity`, `out_quantity`, `balance_quantity`, `unit_cost`) VALUES
-(1, 1, 1, '2026-06-14 13:12:49', 'receiving', 'RCV-20260614091249', 8750.00, 0.00, 8750.00, 82.00),
-(2, 1, 1, '2026-06-14 13:28:41', 'sale', 'INV-20260614092841', 0.00, 10.00, 8740.00, NULL);
+(1, 1, 1, '2026-06-16 13:33:36', 'sale', 'INV-20260616093336', 0.00, 150.00, 8590.00, NULL);
 
 -- --------------------------------------------------------
 
@@ -548,7 +534,8 @@ CREATE TABLE `suppliers` (
 INSERT INTO `suppliers` (`id`, `supplier_code`, `supplier_name`, `company_name`, `phone`, `email`, `address`, `contact_person`, `opening_balance`, `current_balance`, `credit_limit`, `payment_terms`, `is_active`, `created_at`) VALUES
 (1, 'SUP-001', 'Padma Oil Company', 'Padma Oil Ltd', '01700000001', NULL, 'Dhaka, Bangladesh', NULL, 0.00, 0.00, 500000.00, 30, 1, '2026-06-14 08:10:24'),
 (2, 'SUP-002', 'Jamuna Fuel Supply', 'Jamuna Group', '01700000002', NULL, 'Chattogram, Bangladesh', NULL, 0.00, 0.00, 300000.00, 15, 1, '2026-06-14 08:10:24'),
-(3, 'SUP-003', 'Meghna Petroleum', 'Meghna Group', '01700000003', NULL, 'Khulna, Bangladesh', NULL, 0.00, 0.00, 400000.00, 45, 1, '2026-06-14 08:10:24');
+(3, 'SUP-003', 'Meghna Petroleum', 'Meghna Group', '01700000003', NULL, 'Khulna, Bangladesh', NULL, 0.00, 0.00, 400000.00, 45, 1, '2026-06-14 08:10:24'),
+(4, 'SUP-004', 'Titas GAS', 'Titas GAS Company Ltd', '', '', '', '', 0.00, 0.00, 0.00, 30, 1, '2026-06-15 09:12:39');
 
 -- --------------------------------------------------------
 
@@ -620,8 +607,8 @@ CREATE TABLE `tanks` (
 --
 
 INSERT INTO `tanks` (`id`, `tank_name`, `product_id`, `capacity_liters`, `current_stock_liters`, `calibration_factor`, `is_active`) VALUES
-(1, 'Diesel Tank-01', 1, 10000.00, 8740.00, 5.2345, 1),
-(6, 'CNG Tank-01', 4, 3000.00, 0.00, 2.3456, 1);
+(1, 'Diesel Tank-01', 1, 10000.00, 8590.00, 5.2345, 1),
+(6, 'CNG Tank-01', 4, 30000.00, 24430.90, 2.3456, 1);
 
 -- --------------------------------------------------------
 
@@ -691,8 +678,7 @@ CREATE TABLE `vouchers` (
 --
 
 INSERT INTO `vouchers` (`id`, `voucher_no`, `voucher_type`, `date`, `narration`, `created_by`, `approved_by`, `status`, `created_at`) VALUES
-(1, 'PURCH-20260614091249', 'payment', '2026-06-01', 'Fuel purchase from Padma Oil Company - RCV-20260614091249', 1, NULL, 'approved', '2026-06-14 07:12:49'),
-(2, 'CASH-20260614092841336', 'receipt', '2026-06-14', 'Cash sale - Invoice: INV-20260614092841 - Amount: 850', 1, NULL, 'approved', '2026-06-14 07:28:41');
+(1, 'CASH-20260616093336789', 'receipt', '2026-06-16', 'Cash sale - Invoice: INV-20260616093336 - Amount: 15750', 1, NULL, 'approved', '2026-06-16 07:33:36');
 
 -- --------------------------------------------------------
 
@@ -714,8 +700,8 @@ CREATE TABLE `voucher_items` (
 --
 
 INSERT INTO `voucher_items` (`id`, `voucher_id`, `account_id`, `debit_amount`, `credit_amount`, `description`) VALUES
-(1, 2, 1, 850.00, 0.00, 'Cash sale - Invoice: INV-20260614092841'),
-(2, 2, 8, 0.00, 850.00, 'Fuel sale revenue - Invoice: INV-20260614092841');
+(1, 1, 1, 15750.00, 0.00, 'Cash sale - Invoice: INV-20260616093336'),
+(2, 1, 8, 0.00, 15750.00, 'Fuel sale revenue - Invoice: INV-20260616093336');
 
 --
 -- Indexes for dumped tables
@@ -952,7 +938,7 @@ ALTER TABLE `voucher_items`
 -- AUTO_INCREMENT for table `activity_logs`
 --
 ALTER TABLE `activity_logs`
-  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=2;
+  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT;
 
 --
 -- AUTO_INCREMENT for table `attendance`
@@ -964,7 +950,7 @@ ALTER TABLE `attendance`
 -- AUTO_INCREMENT for table `chart_of_accounts`
 --
 ALTER TABLE `chart_of_accounts`
-  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=66;
+  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=69;
 
 --
 -- AUTO_INCREMENT for table `credit_payments`
@@ -1006,7 +992,7 @@ ALTER TABLE `fuel_products`
 -- AUTO_INCREMENT for table `fuel_receivings`
 --
 ALTER TABLE `fuel_receivings`
-  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=2;
+  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT;
 
 --
 -- AUTO_INCREMENT for table `leakage_adjustments`
@@ -1078,13 +1064,13 @@ ALTER TABLE `shift_schedule`
 -- AUTO_INCREMENT for table `stock_ledger`
 --
 ALTER TABLE `stock_ledger`
-  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=3;
+  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=2;
 
 --
 -- AUTO_INCREMENT for table `suppliers`
 --
 ALTER TABLE `suppliers`
-  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=4;
+  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=5;
 
 --
 -- AUTO_INCREMENT for table `supplier_payments`
@@ -1120,7 +1106,7 @@ ALTER TABLE `users`
 -- AUTO_INCREMENT for table `vouchers`
 --
 ALTER TABLE `vouchers`
-  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=3;
+  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=2;
 
 --
 -- AUTO_INCREMENT for table `voucher_items`
