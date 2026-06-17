@@ -610,98 +610,81 @@ foreach($accounts as $acc) {
             </div>
             <?php endif; ?>
             
-            <!-- Voucher Entry Tab -->
+            <!-- ===================================================== -->
+            <!-- VOUCHER ENTRY TAB - REDIRECT TO WORKING VOUCHER ENTRY -->
+            <!-- ===================================================== -->
             <?php if($active_tab == 'voucher'): ?>
             <div class="row mt-3">
                 <div class="col-md-12">
                     <div class="card">
                         <div class="card-header bg-success text-white">
                             <h5><i class="fas fa-file-invoice"></i> Voucher Entry</h5>
+                            <a href="voucher_entry.php" target="_blank" class="btn btn-light btn-sm float-end">
+                                <i class="fas fa-external-link-alt"></i> Open in New Window
+                            </a>
                         </div>
                         <div class="card-body">
                             <div class="alert alert-info">
                                 <i class="fas fa-info-circle"></i> 
-                                <strong>Note:</strong> Debit and Credit totals must be equal. Select accounts from the list below.
+                                <strong>Voucher Entry System</strong><br>
+                                Use the link below to access the full voucher entry system.
                             </div>
                             
-                            <form method="POST" id="voucherForm">
-                                <div class="row">
-                                    <div class="col-md-4">
-                                        <div class="mb-3">
-                                            <label>Voucher Type</label>
-                                            <select name="voucher_type" class="form-control" required>
-                                                <option value="journal">Journal Voucher</option>
-                                                <option value="payment">Payment Voucher</option>
-                                                <option value="receipt">Receipt Voucher</option>
-                                                <option value="contra">Contra Voucher</option>
-                                            </select>
-                                        </div>
-                                    </div>
-                                    <div class="col-md-4">
-                                        <div class="mb-3">
-                                            <label>Date</label>
-                                            <input type="date" name="date" class="form-control" value="<?php echo date('Y-m-d'); ?>" required>
-                                        </div>
-                                    </div>
-                                    <div class="col-md-4">
-                                        <div class="mb-3">
-                                            <label>Narration</label>
-                                            <input type="text" name="narration" class="form-control" placeholder="Enter description..." required>
-                                        </div>
-                                    </div>
-                                </div>
-                                
+                            <div class="text-center py-4">
+                                <a href="voucher_entry.php" class="btn btn-success btn-lg">
+                                    <i class="fas fa-file-invoice"></i> Go to Voucher Entry
+                                </a>
+                                <br>
+                                <small class="text-muted mt-2 d-block">Opens in the same window</small>
+                            </div>
+                            
+                            <!-- Show recent vouchers -->
+                            <div class="mt-4">
+                                <h6><i class="fas fa-history"></i> Recent Vouchers</h6>
                                 <div class="table-responsive">
-                                    <table class="table table-bordered" id="voucherTable">
+                                    <table class="table table-bordered table-sm">
                                         <thead class="table-dark">
                                             <tr>
-                                                <th width="40%">Account</th>
-                                                <th width="25%">Debit (BDT)</th>
-                                                <th width="25%">Credit (BDT)</th>
-                                                <th width="10%">Action</th>
+                                                <th>Voucher No</th>
+                                                <th>Date</th>
+                                                <th>Type</th>
+                                                <th>Narration</th>
+                                                <th>Actions</th>
                                             </tr>
                                         </thead>
                                         <tbody>
+                                            <?php 
+                                            $recent_vouchers = $pdo->query("SELECT * FROM vouchers ORDER BY id DESC LIMIT 5")->fetchAll();
+                                            if($recent_vouchers):
+                                                foreach($recent_vouchers as $v):
+                                            ?>
                                             <tr>
+                                                <td><?php echo $v['voucher_no']; ?></td>
+                                                <td><?php echo date('d-m-Y', strtotime($v['date'])); ?></td>
+                                                <td><?php echo ucfirst($v['voucher_type']); ?></td>
+                                                <td><?php echo htmlspecialchars(substr($v['narration'], 0, 30)); ?>...</td>
                                                 <td>
-                                                    <select name="account_id[]" class="form-control account-select" required>
-                                                        <option value="">-- Select Account --</option>
-                                                        <?php foreach($accounts as $acc): ?>
-                                                            <option value="<?php echo $acc['id']; ?>">
-                                                                <?php echo $acc['account_code']; ?> - <?php echo htmlspecialchars($acc['account_name']); ?> (<?php echo ucfirst($acc['account_type']); ?>)
-                                                            </option>
-                                                        <?php endforeach; ?>
-                                                    </select>
+                                                    <a href="view_voucher.php?id=<?php echo $v['id']; ?>" class="btn btn-sm btn-info" target="_blank">
+                                                        <i class="fas fa-eye"></i>
+                                                    </a>
+                                                    <a href="print_voucher.php?id=<?php echo $v['id']; ?>" class="btn btn-sm btn-primary" target="_blank">
+                                                        <i class="fas fa-print"></i>
+                                                    </a>
                                                 </td>
-                                                <td><input type="number" name="debit[]" class="form-control debit" step="0.01" value="0"></td>
-                                                <td><input type="number" name="credit[]" class="form-control credit" step="0.01" value="0"></td>
-                                                <td class="text-center"><button type="button" class="btn btn-danger btn-sm remove-row">×</button></td>
                                             </tr>
-                                        </tbody>
-                                        <tfoot>
+                                            <?php 
+                                                endforeach;
+                                            else:
+                                            ?>
                                             <tr>
-                                                <th class="text-end">Total:</th>
-                                                <th><span id="totalDebit" class="fw-bold">0.00</span></th>
-                                                <th><span id="totalCredit" class="fw-bold">0.00</span></th>
-                                                <th>
-                                                    <button type="button" class="btn btn-primary btn-sm" id="addRow">
-                                                        <i class="fas fa-plus"></i> Add Row
-                                                    </button>
-                                                </th>
+                                                <td colspan="5" class="text-center text-muted">No vouchers found</td>
                                             </tr>
-                                        </tfoot>
+                                            <?php endif; ?>
+                                        </tbody>
                                     </table>
+                                    <a href="accounting.php?tab=list" class="btn btn-sm btn-secondary">View All Vouchers</a>
                                 </div>
-                                
-                                <div class="mt-3">
-                                    <button type="submit" name="save_voucher" class="btn btn-success">
-                                        <i class="fas fa-save"></i> Save Voucher
-                                    </button>
-                                    <button type="reset" class="btn btn-secondary">
-                                        <i class="fas fa-undo"></i> Reset
-                                    </button>
-                                </div>
-                            </form>
+                            </div>
                         </div>
                     </div>
                 </div>

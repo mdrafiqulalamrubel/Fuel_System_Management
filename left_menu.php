@@ -327,11 +327,10 @@ $user_role = $user['role'] ?? 'guest';
                     <i class="fas fa-book"></i>
                     <span>Chart of Accounts</span>
                 </a>
-            </li>
+            </li>          
             <li class="nav-item">
-                <a class="nav-link" href="accounting.php?tab=voucher">
-                    <i class="fas fa-file-invoice"></i>
-                    <span>Voucher Entry</span>
+                <a class="nav-link" href="voucher_entry.php">
+                    <i class="fas fa-file-invoice"></i> Voucher Entry
                 </a>
             </li>
         </div>

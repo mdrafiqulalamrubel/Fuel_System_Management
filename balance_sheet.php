@@ -4,16 +4,10 @@ if(!isLoggedIn()) redirect('index.php');
 
 $as_on = $_GET['as_on'] ?? date('Y-m-d');
 
-// =====================================================
-// FIXED: Define $incomes and $expenses variables
-// =====================================================
 $incomes = $pdo->query("SELECT * FROM chart_of_accounts WHERE account_type = 'income' AND is_active = 1")->fetchAll();
 $expenses = $pdo->query("SELECT * FROM chart_of_accounts WHERE account_type = 'expense' AND is_active = 1")->fetchAll();
-
-// Get all accounts with balances
 $accounts = $pdo->query("SELECT * FROM chart_of_accounts WHERE is_active = 1 ORDER BY account_type, account_code")->fetchAll();
 
-// Calculate balances from vouchers up to as_on date
 $balances = [];
 foreach($accounts as $acc) {
     $stmt = $pdo->prepare("
@@ -30,7 +24,6 @@ foreach($accounts as $acc) {
     
     $opening = floatval($acc['opening_balance']);
     
-    // Calculate balance based on account type
     if($acc['balance_type'] == 'debit') {
         $balance = $opening + ($total_debit - $total_credit);
     } else {
@@ -38,6 +31,7 @@ foreach($accounts as $acc) {
     }
     
     $balances[$acc['id']] = [
+        'id' => $acc['id'],
         'name' => $acc['account_name'],
         'type' => $acc['account_type'],
         'code' => $acc['account_code'],
@@ -47,14 +41,10 @@ foreach($accounts as $acc) {
     ];
 }
 
-// =====================================================
-// Calculate Net Profit/Loss using SAME method as P&L
-// Use the current period (month) not year-to-date
-// =====================================================
-$from_date = date('Y-m-01'); // First day of current month
-$to_date = $as_on; // Selected date
+// Calculate Net Profit/Loss
+$from_date = date('Y-01-01');
+$to_date = $as_on;
 
-// Get total income from income accounts ONLY from vouchers
 $stmt = $pdo->prepare("
     SELECT COALESCE(SUM(vi.credit_amount - vi.debit_amount), 0) as total
     FROM voucher_items vi 
@@ -67,7 +57,6 @@ $stmt = $pdo->prepare("
 $stmt->execute([$from_date, $to_date]);
 $total_income = floatval($stmt->fetch()['total'] ?? 0);
 
-// Get total expenses from expense accounts ONLY from vouchers
 $stmt = $pdo->prepare("
     SELECT COALESCE(SUM(vi.debit_amount - vi.credit_amount), 0) as total
     FROM voucher_items vi 
@@ -80,41 +69,6 @@ $stmt = $pdo->prepare("
 $stmt->execute([$from_date, $to_date]);
 $total_expense = floatval($stmt->fetch()['total'] ?? 0);
 
-// Check if Fuel Sales exists in income data
-$has_fuel_sales = false;
-foreach($incomes as $inc) {
-    if(stripos($inc['account_name'], 'Fuel Sales') !== false) {
-        $has_fuel_sales = true;
-        break;
-    }
-}
-
-// If no fuel sales found in vouchers, add from sales table
-if(!$has_fuel_sales) {
-    $stmt = $pdo->prepare("SELECT COALESCE(SUM(total_amount), 0) as total_sales FROM sales WHERE DATE(sale_date) BETWEEN ? AND ?");
-    $stmt->execute([$from_date, $to_date]);
-    $fuel_sales = $stmt->fetch()['total_sales'] ?? 0;
-    $total_income += $fuel_sales;
-}
-
-// Check if COGS exists in expense data
-$has_cogs = false;
-foreach($expenses as $exp) {
-    if(stripos($exp['account_name'], 'Fuel Purchase') !== false || stripos($exp['account_name'], 'COGS') !== false) {
-        $has_cogs = true;
-        break;
-    }
-}
-
-// If no COGS found, add from fuel_receivings
-if(!$has_cogs) {
-    $stmt = $pdo->prepare("SELECT COALESCE(SUM(total_amount), 0) as total_purchase FROM fuel_receivings WHERE receipt_date BETWEEN ? AND ?");
-    $stmt->execute([$from_date, $to_date]);
-    $cogs = $stmt->fetch()['total_purchase'] ?? 0;
-    $total_expense += $cogs;
-}
-
-// Calculate Net Profit/Loss
 $net_profit_loss = $total_income - $total_expense;
 
 // Separate assets, liabilities, equity
@@ -126,11 +80,9 @@ $total_assets = array_sum(array_column($assets, 'balance'));
 $total_liabilities = array_sum(array_column($liabilities, 'balance'));
 $total_equity_from_accounts = array_sum(array_column($equity, 'balance'));
 
-// Calculate final equity including Net Profit/Loss
 $final_equity = $total_equity_from_accounts + $net_profit_loss;
 $total_liabilities_equity = $total_liabilities + $final_equity;
 
-// If balance doesn't match, show suspense account
 $difference = $total_assets - $total_liabilities_equity;
 $suspense_account = null;
 if(abs($difference) > 0.01) {
@@ -173,6 +125,20 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
         .net-loss { background-color: #f8d7da; color: #721c24; }
         .net-profit { background-color: #d4edda; color: #155724; }
         .suspense-row { background-color: #fff3cd; color: #856404; }
+        .clickable-row {
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+        .clickable-row:hover {
+            background-color: #e8f0fe !important;
+        }
+        .clickable-row td:first-child {
+            color: #007bff;
+            font-weight: 500;
+        }
+        .clickable-row td:first-child:hover {
+            text-decoration: underline;
+        }
         
         @media print {
             .sidebar, .no-print, .stats-card, .btn, .card-header .btn, form { display: none !important; }
@@ -256,6 +222,7 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
             <div class="card">
                 <div class="card-header bg-primary text-white text-center">
                     <h4>Balance Sheet as on <?php echo date('d F, Y', strtotime($as_on)); ?></h4>
+                    <small class="d-block text-light">Click on any account to view detailed ledger</small>
                 </div>
                 <div class="card-body">
                     <div class="row">
@@ -275,7 +242,10 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                                                 <tr><td colspan="2" class="text-center text-muted">No asset accounts found</td></tr>
                                             <?php else: ?>
                                                 <?php foreach($assets as $a): ?>
-                                                <tr><td><?php echo htmlspecialchars($a['name']); ?></td>
+                                                <tr class="clickable-row" 
+                                                    onclick="window.open('general_ledger.php?account_id=<?php echo $a['id']; ?>&from_date=<?php echo date('Y-01-01'); ?>&to_date=<?php echo $as_on; ?>', '_blank')"
+                                                    title="Click to view ledger for <?php echo $a['name']; ?>">
+                                                    <td><?php echo htmlspecialchars($a['name']); ?></td>
                                                     <td class="text-end"><?php echo number_format($a['balance'], 2); ?></td>
                                                 </tr>
                                                 <?php endforeach; ?>
@@ -310,7 +280,10 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                                                 <tr><td colspan="2" class="text-center text-muted">No liability accounts found</td></tr>
                                             <?php else: ?>
                                                 <?php foreach($liabilities as $l): ?>
-                                                <tr><td><?php echo htmlspecialchars($l['name']); ?></td>
+                                                <tr class="clickable-row" 
+                                                    onclick="window.open('general_ledger.php?account_id=<?php echo $l['id']; ?>&from_date=<?php echo date('Y-01-01'); ?>&to_date=<?php echo $as_on; ?>', '_blank')"
+                                                    title="Click to view ledger for <?php echo $l['name']; ?>">
+                                                    <td><?php echo htmlspecialchars($l['name']); ?></td>
                                                     <td class="text-end"><?php echo number_format($l['balance'], 2); ?></td>
                                                 </tr>
                                                 <?php endforeach; ?>
@@ -325,16 +298,21 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                                                 <td colspan="2"><strong>EQUITY</strong></td>
                                             </tr>
                                             <?php foreach($equity as $e): ?>
-                                            <tr><td><?php echo htmlspecialchars($e['name']); ?></td>
+                                            <tr class="clickable-row" 
+                                                onclick="window.open('general_ledger.php?account_id=<?php echo $e['id']; ?>&from_date=<?php echo date('Y-01-01'); ?>&to_date=<?php echo $as_on; ?>', '_blank')"
+                                                title="Click to view ledger for <?php echo $e['name']; ?>">
+                                                <td><?php echo htmlspecialchars($e['name']); ?></td>
                                                 <td class="text-end"><?php echo number_format($e['balance'], 2); ?></td>
                                             </tr>
                                             <?php endforeach; ?>
                                             
                                             <!-- Net Profit/Loss Section -->
-                                            <tr class="<?php echo $net_profit_loss >= 0 ? 'net-profit' : 'net-loss'; ?>">
+                                            <tr class="<?php echo $net_profit_loss >= 0 ? 'net-profit' : 'net-loss'; ?> clickable-row" 
+                                                onclick="window.open('profit_loss.php?from_date=<?php echo date('Y-01-01'); ?>&to_date=<?php echo $as_on; ?>', '_blank')"
+                                                title="Click to view Profit & Loss Statement">
                                                 <td>
                                                     <strong><?php echo $net_profit_loss >= 0 ? 'Net Profit' : 'Net Loss'; ?></strong>
-                                                    <br><small class="text-muted">(Current Period)</small>
+                                                    <br><small class="text-muted">(Year to Date)</small>
                                                 </td>
                                                 <td class="text-end fw-bold">
                                                     <?php if($net_profit_loss >= 0): ?>

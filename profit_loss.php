@@ -2,22 +2,17 @@
 require_once 'config/database.php';
 if(!isLoggedIn()) redirect('index.php');
 
-// =====================================================
-// FIXED: Proper date handling - use selected dates or default to current month
-// =====================================================
 $from_date = isset($_GET['from_date']) && !empty($_GET['from_date']) ? $_GET['from_date'] : date('Y-m-01');
 $to_date = isset($_GET['to_date']) && !empty($_GET['to_date']) ? $_GET['to_date'] : date('Y-m-t');
 
-// Get income accounts (excluding duplicate from sales table)
+// Get income accounts
 $incomes = $pdo->query("SELECT * FROM chart_of_accounts WHERE account_type = 'income' AND is_active = 1")->fetchAll();
-
 // Get expense accounts
 $expenses = $pdo->query("SELECT * FROM chart_of_accounts WHERE account_type = 'expense' AND is_active = 1")->fetchAll();
 
-// Calculate income from voucher entries only (not double-counting)
+// Calculate income from voucher entries
 $income_data = [];
 foreach($incomes as $inc) {
-    // For income accounts: Credit - Debit
     $stmt = $pdo->prepare("
         SELECT COALESCE(SUM(vi.credit_amount), 0) - COALESCE(SUM(vi.debit_amount), 0) as total 
         FROM voucher_items vi 
@@ -29,10 +24,10 @@ foreach($incomes as $inc) {
     $stmt->execute([$inc['id'], $from_date, $to_date]);
     $total = $stmt->fetch()['total'] ?? 0;
     
-    // Only show non-zero amounts
     if(abs($total) > 0.01) {
         $income_data[] = [
-            'name' => $inc['account_name'], 
+            'id' => $inc['id'],
+            'name' => $inc['account_name'],
             'amount' => abs($total)
         ];
     }
@@ -41,7 +36,6 @@ foreach($incomes as $inc) {
 // Calculate expenses from voucher entries
 $expense_data = [];
 foreach($expenses as $exp) {
-    // For expense accounts: Debit - Credit
     $stmt = $pdo->prepare("
         SELECT COALESCE(SUM(vi.debit_amount), 0) - COALESCE(SUM(vi.credit_amount), 0) as total 
         FROM voucher_items vi 
@@ -53,10 +47,10 @@ foreach($expenses as $exp) {
     $stmt->execute([$exp['id'], $from_date, $to_date]);
     $total = $stmt->fetch()['total'] ?? 0;
     
-    // Only show non-zero amounts
     if(abs($total) > 0.01) {
         $expense_data[] = [
-            'name' => $exp['account_name'], 
+            'id' => $exp['id'],
+            'name' => $exp['account_name'],
             'amount' => abs($total)
         ];
     }
@@ -71,13 +65,12 @@ foreach($income_data as $inc) {
     }
 }
 
-// If no fuel sales found in voucher entries, add from sales table
 if(!$has_fuel_sales) {
     $stmt = $pdo->prepare("SELECT COALESCE(SUM(total_amount), 0) as total_sales FROM sales WHERE DATE(sale_date) BETWEEN ? AND ?");
     $stmt->execute([$from_date, $to_date]);
     $fuel_sales = $stmt->fetch()['total_sales'] ?? 0;
     if($fuel_sales > 0) {
-        $income_data[] = ['name' => 'Fuel Sales (Direct)', 'amount' => $fuel_sales];
+        $income_data[] = ['id' => 0, 'name' => 'Fuel Sales (Direct)', 'amount' => $fuel_sales];
     }
 }
 
@@ -92,13 +85,12 @@ foreach($expense_data as $exp) {
     }
 }
 
-// If no COGS found, add from fuel_receivings
 if(!$has_cogs) {
     $stmt = $pdo->prepare("SELECT COALESCE(SUM(total_amount), 0) as total_purchase FROM fuel_receivings WHERE receipt_date BETWEEN ? AND ?");
     $stmt->execute([$from_date, $to_date]);
     $cogs = $stmt->fetch()['total_purchase'] ?? 0;
     if($cogs > 0) {
-        $expense_data[] = ['name' => 'Cost of Goods Sold (Fuel Purchase)', 'amount' => $cogs];
+        $expense_data[] = ['id' => 0, 'name' => 'Cost of Goods Sold (Fuel Purchase)', 'amount' => $cogs];
     }
 }
 
@@ -127,53 +119,40 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
             transition: transform 0.3s;
         }
         .stats-card:hover { transform: translateY(-5px); }
-        .stats-card i {
-            font-size: 40px;
-            opacity: 0.5;
-            float: right;
-        }
-        .pl-table {
-            width: 100%;
-            border-collapse: collapse;
-        }
-        .pl-table th, .pl-table td {
-            border: 1px solid #dee2e6;
-            padding: 12px;
-        }
-        .pl-table th {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            font-weight: bold;
-        }
+        .stats-card i { font-size: 40px; opacity: 0.5; float: right; }
+        .pl-table { width: 100%; border-collapse: collapse; }
+        .pl-table th, .pl-table td { border: 1px solid #dee2e6; padding: 12px; }
+        .pl-table th { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; font-weight: bold; }
         .text-end { text-align: right; }
         .fw-bold { font-weight: bold; }
+        .clickable-row {
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+        .clickable-row:hover {
+            background-color: #e8f0fe !important;
+        }
+        .clickable-row td:first-child {
+            color: #007bff;
+            font-weight: 500;
+        }
+        .clickable-row td:first-child:hover {
+            text-decoration: underline;
+        }
+        .income-row { background-color: #e8f5e9; }
+        .expense-row { background-color: #ffebee; }
+        .total-row { background-color: #e3f2fd; font-weight: bold; }
         
         @media print {
             .sidebar, .no-print, .stats-card, .btn, .card-header .btn, form {
                 display: none !important;
             }
-            .main-content {
-                margin: 0 !important;
-                padding: 10px !important;
-            }
-            .print-header {
-                display: block !important;
-                text-align: center;
-                margin-bottom: 20px;
-            }
-            .pl-table th, .pl-table td {
-                border: 1px solid #000 !important;
-            }
-            .pl-table th {
-                background: #ddd !important;
-                color: black !important;
-            }
+            .main-content { margin: 0 !important; padding: 10px !important; }
+            .print-header { display: block !important; text-align: center; margin-bottom: 20px; }
+            .pl-table th, .pl-table td { border: 1px solid #000 !important; }
+            .pl-table th { background: #ddd !important; color: black !important; }
         }
         .print-header { display: none; }
-        
-        .income-row { background-color: #e8f5e9; }
-        .expense-row { background-color: #ffebee; }
-        .total-row { background-color: #e3f2fd; font-weight: bold; }
     </style>
 </head>
 <body>
@@ -181,12 +160,10 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
     
     <div class="main-content">
         <div class="container-fluid">
-            <!-- Print Header -->
             <div class="print-header">
                 <h2><?php echo $settings['company_name'] ?? 'FF Enterprise'; ?></h2>
                 <h4>Profit & Loss Statement</h4>
                 <p>Period: <?php echo date('d F Y', strtotime($from_date)); ?> to <?php echo date('d F Y', strtotime($to_date)); ?></p>
-                <p>Generated on: <?php echo date('d/m/Y h:i:s A'); ?></p>
                 <hr>
             </div>
             
@@ -252,11 +229,12 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                 </div>
             </div>
             
-            <!-- Profit & Loss Statement - Side by Side -->
+            <!-- Profit & Loss Statement -->
             <div class="card">
                 <div class="card-header bg-success text-white text-center">
                     <h4>Profit & Loss Statement</h4>
                     <p class="mb-0"><?php echo date('d F Y', strtotime($from_date)); ?> to <?php echo date('d F Y', strtotime($to_date)); ?></p>
+                    <small class="d-block text-light">Click on any income or expense item to view details</small>
                 </div>
                 <div class="card-body">
                     <div class="row">
@@ -276,12 +254,12 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                                         </thead>
                                         <tbody>
                                             <?php if(empty($income_data)): ?>
-                                                <tr>
-                                                    <td colspan="2" class="text-center text-muted">No income records found</td>
-                                                </tr>
+                                                <tr><td colspan="2" class="text-center text-muted">No income records found</td></tr>
                                             <?php else: ?>
                                                 <?php foreach($income_data as $inc): ?>
-                                                <tr class="income-row">
+                                                <tr class="income-row clickable-row" 
+                                                    onclick="window.open('general_ledger.php?account_id=<?php echo $inc['id']; ?>&from_date=<?php echo $from_date; ?>&to_date=<?php echo $to_date; ?>', '_blank')"
+                                                    title="Click to view ledger for <?php echo $inc['name']; ?>">
                                                     <td><?php echo htmlspecialchars($inc['name']); ?></td>
                                                     <td class="text-end"><?php echo $currency; ?> <?php echo number_format($inc['amount'], 2); ?></td>
                                                 </tr>
@@ -313,12 +291,12 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                                         </thead>
                                         <tbody>
                                             <?php if(empty($expense_data)): ?>
-                                                <tr>
-                                                    <td colspan="2" class="text-center text-muted">No expense records found</td>
-                                                </tr>
+                                                <tr><td colspan="2" class="text-center text-muted">No expense records found</td></tr>
                                             <?php else: ?>
                                                 <?php foreach($expense_data as $exp): ?>
-                                                <tr class="expense-row">
+                                                <tr class="expense-row clickable-row" 
+                                                    onclick="window.open('general_ledger.php?account_id=<?php echo $exp['id']; ?>&from_date=<?php echo $from_date; ?>&to_date=<?php echo $to_date; ?>', '_blank')"
+                                                    title="Click to view ledger for <?php echo $exp['name']; ?>">
                                                     <td><?php echo htmlspecialchars($exp['name']); ?></td>
                                                     <td class="text-end"><?php echo $currency; ?> <?php echo number_format($exp['amount'], 2); ?></td>
                                                 </tr>

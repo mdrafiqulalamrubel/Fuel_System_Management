@@ -39,7 +39,8 @@ if($customer_id) {
                 NULL as payment_method,
                 NULL as receipt_no,
                 total_amount as debit,
-                0 as credit
+                0 as credit,
+                id as sale_id
             FROM credit_sales 
             WHERE customer_id = ? AND sale_date BETWEEN ? AND ?
         ");
@@ -57,7 +58,8 @@ if($customer_id) {
                 cp.payment_method,
                 cp.receipt_no,
                 0 as debit,
-                cp.amount as credit
+                cp.amount as credit,
+                cp.id as payment_id
             FROM credit_payments cp
             JOIN credit_sales cs ON cp.credit_sale_id = cs.id
             WHERE cs.customer_id = ? AND cp.payment_date BETWEEN ? AND ?
@@ -74,6 +76,7 @@ if($customer_id) {
 }
 
 $settings = $pdo->query("SELECT setting_key, setting_value FROM system_settings")->fetchAll(PDO::FETCH_KEY_PAIR);
+$currency = $settings['currency_symbol'] ?? 'BDT';
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -83,18 +86,63 @@ $settings = $pdo->query("SELECT setting_key, setting_value FROM system_settings"
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdn.datatables.net/1.11.5/css/dataTables.bootstrap5.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        .clickable-row {
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+        .clickable-row:hover {
+            background-color: #e8f0fe !important;
+        }
+        .clickable-row td:nth-child(2) {
+            color: #007bff;
+            font-weight: 500;
+        }
+        .clickable-row td:nth-child(2):hover {
+            text-decoration: underline;
+        }
+        .stats-card {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border-radius: 15px;
+            padding: 20px;
+            margin-bottom: 20px;
+            transition: transform 0.3s;
+        }
+        .stats-card:hover { transform: translateY(-5px); }
+        .stats-card i { font-size: 40px; opacity: 0.5; float: right; }
+        
+        @media print {
+            .sidebar, .no-print, .btn { display: none !important; }
+            .main-content { margin: 0 !important; padding: 10px !important; }
+            .print-header { display: block !important; text-align: center; margin-bottom: 20px; }
+        }
+        .print-header { display: none; }
+    </style>
 </head>
 <body>
     <?php include 'left_menu.php'; ?>
     
     <div class="main-content">
         <div class="container-fluid">
-            <div class="d-flex justify-content-between align-items-center mb-4">
-                <h2><i class="fas fa-users"></i> Customer Ledger (Party Ledger)</h2>
-                <a href="dashboard.php" class="btn btn-secondary">Back</a>
+            <div class="print-header">
+                <h2><?php echo $settings['company_name'] ?? 'FF Enterprise'; ?></h2>
+                <h4>Customer Ledger</h4>
+                <p>Period: <?php echo date('d F Y', strtotime($from_date)); ?> to <?php echo date('d F Y', strtotime($to_date)); ?></p>
+                <hr>
             </div>
             
-            <div class="card mb-4">
+            <div class="d-flex justify-content-between align-items-center mb-4">
+                <h2><i class="fas fa-users"></i> Customer Ledger (Party Ledger)</h2>
+                <div class="no-print">
+                    <button onclick="window.print()" class="btn btn-primary">
+                        <i class="fas fa-print"></i> Print
+                    </button>
+                    <a href="dashboard.php" class="btn btn-secondary">Back</a>
+                </div>
+            </div>
+            
+            <div class="card mb-4 no-print">
                 <div class="card-header bg-primary text-white">
                     <h5>Select Customer</h5>
                 </div>
@@ -105,7 +153,7 @@ $settings = $pdo->query("SELECT setting_key, setting_value FROM system_settings"
                                 <option value="">-- Select Customer --</option>
                                 <?php foreach($customers as $c): ?>
                                     <option value="<?php echo $c['id']; ?>" <?php echo $customer_id == $c['id'] ? 'selected' : ''; ?>>
-                                        <?php echo $c['customer_name']; ?> (<?php echo $c['customer_code']; ?>) - Due: BDT <?php echo number_format($c['current_balance'], 2); ?>
+                                        <?php echo $c['customer_name']; ?> (<?php echo $c['customer_code']; ?>) - Due: <?php echo $currency; ?> <?php echo number_format($c['current_balance'], 2); ?>
                                     </option>
                                 <?php endforeach; ?>
                             </select>
@@ -146,7 +194,7 @@ $settings = $pdo->query("SELECT setting_key, setting_value FROM system_settings"
                         <div class="card text-white bg-warning">
                             <div class="card-body">
                                 <h6>Credit Limit</h6>
-                                <h4>BDT <?php echo number_format($customer['credit_limit'], 2); ?></h4>
+                                <h4><?php echo $currency; ?> <?php echo number_format($customer['credit_limit'], 2); ?></h4>
                             </div>
                         </div>
                     </div>
@@ -154,7 +202,7 @@ $settings = $pdo->query("SELECT setting_key, setting_value FROM system_settings"
                         <div class="card text-white bg-danger">
                             <div class="card-body">
                                 <h6>Due Balance</h6>
-                                <h4>BDT <?php echo number_format($customer['current_balance'], 2); ?></h4>
+                                <h4><?php echo $currency; ?> <?php echo number_format($customer['current_balance'], 2); ?></h4>
                             </div>
                         </div>
                     </div>
@@ -176,7 +224,7 @@ $settings = $pdo->query("SELECT setting_key, setting_value FROM system_settings"
                             <div class="card-body">
                                 <strong>Opening Balance (as on <?php echo date('d M Y', strtotime($from_date)); ?>):</strong><br>
                                 <span class="h4 <?php echo $opening_balance > 0 ? 'text-danger' : 'text-success'; ?>">
-                                    BDT <?php echo number_format(abs($opening_balance), 2); ?> <?php echo $opening_balance > 0 ? '(Dr)' : ($opening_balance < 0 ? '(Cr)' : ''); ?>
+                                    <?php echo $currency; ?> <?php echo number_format(abs($opening_balance), 2); ?> <?php echo $opening_balance > 0 ? '(Dr)' : ($opening_balance < 0 ? '(Cr)' : ''); ?>
                                 </span>
                             </div>
                         </div>
@@ -187,6 +235,7 @@ $settings = $pdo->query("SELECT setting_key, setting_value FROM system_settings"
                 <div class="card">
                     <div class="card-header bg-success text-white">
                         <h5>Ledger Statement (<?php echo date('d M Y', strtotime($from_date)); ?> to <?php echo date('d M Y', strtotime($to_date)); ?>)</h5>
+                        <small class="d-block text-light">Click on any transaction to view details</small>
                     </div>
                     <div class="card-body">
                         <div class="table-responsive">
@@ -196,9 +245,9 @@ $settings = $pdo->query("SELECT setting_key, setting_value FROM system_settings"
                                         <th>Date</th>
                                         <th>Reference</th>
                                         <th>Particulars</th>
-                                        <th class="text-end">Debit (BDT)</th>
-                                        <th class="text-end">Credit (BDT)</th>
-                                        <th class="text-end">Balance (BDT)</th>
+                                        <th class="text-end">Debit (<?php echo $currency; ?>)</th>
+                                        <th class="text-end">Credit (<?php echo $currency; ?>)</th>
+                                        <th class="text-end">Balance (<?php echo $currency; ?>)</th>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -242,25 +291,25 @@ $settings = $pdo->query("SELECT setting_key, setting_value FROM system_settings"
                                                 $total_credit += $t['amount'];
                                             }
                                         ?>
-                                        <tr>
+                                        <tr class="clickable-row" 
+                                            onclick="window.open('view_invoice.php?invoice=<?php echo $t['ref_no']; ?>', '_blank')"
+                                            title="Click to view details for <?php echo $t['ref_no']; ?>">
                                             <td><?php echo date('d-m-Y', strtotime($t['trans_date'])); ?></td>
                                             <td>
                                                 <?php if($t['trans_type'] == 'sale'): ?>
-                                                    <a href="view_invoice.php?invoice=<?php echo $t['ref_no']; ?>" target="_blank">
-                                                        <?php echo $t['ref_no']; ?>
-                                                    </a>
+                                                    <?php echo $t['ref_no']; ?>
                                                 <?php else: ?>
                                                     <?php echo $t['ref_no']; ?>
                                                 <?php endif; ?>
                                             </td>
                                             <td>
                                                 <?php if($t['trans_type'] == 'sale'): ?>
-                                                    Fuel Purchase 
+                                                    <span class="text-primary">Fuel Purchase (Credit)</span>
                                                     <?php if(isset($t['due_date']) && $t['due_date']): ?>
                                                         <br><small class="text-muted">Due: <?php echo date('d-m-Y', strtotime($t['due_date'])); ?></small>
                                                     <?php endif; ?>
                                                 <?php else: ?>
-                                                    Payment Received 
+                                                    <span class="text-success">Payment Received</span>
                                                     <br><small class="text-muted">Method: <?php echo ucfirst($t['payment_method']); ?></small>
                                                 <?php endif; ?>
                                             </td>
@@ -291,7 +340,7 @@ $settings = $pdo->query("SELECT setting_key, setting_value FROM system_settings"
                                         </td>
                                     </tr>
                                 </tbody>
-                             </div>
+                            </table>
                         </div>
                     </div>
                 </div>
@@ -306,19 +355,19 @@ $settings = $pdo->query("SELECT setting_key, setting_value FROM system_settings"
                             <div class="col-md-4">
                                 <div class="alert alert-info">
                                     <strong>Total Sales (This Period)</strong><br>
-                                    <span class="h4">BDT <?php echo number_format($total_debit, 2); ?></span>
+                                    <span class="h4"><?php echo $currency; ?> <?php echo number_format($total_debit, 2); ?></span>
                                 </div>
                             </div>
                             <div class="col-md-4">
                                 <div class="alert alert-success">
                                     <strong>Total Payments (This Period)</strong><br>
-                                    <span class="h4">BDT <?php echo number_format($total_credit, 2); ?></span>
+                                    <span class="h4"><?php echo $currency; ?> <?php echo number_format($total_credit, 2); ?></span>
                                 </div>
                             </div>
                             <div class="col-md-4">
                                 <div class="alert alert-danger">
                                     <strong>Outstanding Balance</strong><br>
-                                    <span class="h4">BDT <?php echo number_format($customer['current_balance'], 2); ?></span>
+                                    <span class="h4"><?php echo $currency; ?> <?php echo number_format($customer['current_balance'], 2); ?></span>
                                 </div>
                             </div>
                         </div>

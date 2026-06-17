@@ -25,6 +25,7 @@ foreach($accounts as $acc) {
     
     if($debit_balance != 0 || $credit_balance != 0) {
         $trial_balance[] = [
+            'id' => $acc['id'],
             'code' => $acc['account_code'],
             'name' => $acc['account_name'],
             'type' => $acc['account_type'],
@@ -55,24 +56,31 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
             border-radius: 15px;
             padding: 20px;
             margin-bottom: 20px;
+            transition: transform 0.3s;
+        }
+        .stats-card:hover { transform: translateY(-5px); }
+        .clickable-row {
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+        .clickable-row:hover {
+            background-color: #e8f0fe !important;
+        }
+        .clickable-row td:first-child {
+            color: #007bff;
+            font-weight: 500;
+        }
+        .clickable-row td:first-child:hover {
+            text-decoration: underline;
         }
         @media print {
             .sidebar, .no-print, .stats-card, .btn, .dataTables_length, .dataTables_filter, .dataTables_paginate {
                 display: none !important;
             }
-            .main-content {
-                margin: 0 !important;
-                padding: 10px !important;
-            }
-            .print-header {
-                display: block !important;
-                text-align: center;
-                margin-bottom: 20px;
-            }
+            .main-content { margin: 0 !important; padding: 10px !important; }
+            .print-header { display: block !important; text-align: center; margin-bottom: 20px; }
         }
-        .print-header {
-            display: none;
-        }
+        .print-header { display: none; }
     </style>
 </head>
 <body>
@@ -80,12 +88,10 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
     
     <div class="main-content">
         <div class="container-fluid">
-            <!-- Print Header -->
             <div class="print-header">
                 <h2><?php echo $settings['company_name'] ?? 'FF Enterprise'; ?></h2>
                 <h4>Trial Balance</h4>
                 <p>As on: <?php echo date('d F Y', strtotime($as_on)); ?></p>
-                <p>Generated on: <?php echo date('d/m/Y h:i:s A'); ?></p>
                 <hr>
             </div>
             
@@ -95,7 +101,7 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                     <button onclick="window.print()" class="btn btn-primary">
                         <i class="fas fa-print"></i> Print Report
                     </button>
-                    <a href="reports.php" class="btn btn-secondary">
+                    <a href="accounting.php?tab=reports" class="btn btn-secondary">
                         <i class="fas fa-arrow-left"></i> Back
                     </a>
                 </div>
@@ -126,14 +132,14 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
             <div class="row mb-4 no-print">
                 <div class="col-md-6">
                     <div class="stats-card">
-                        <i class="fas fa-chart-line"></i>
+                        <i class="fas fa-arrow-right"></i>
                         <h3><?php echo $currency; ?> <?php echo number_format($total_debit, 2); ?></h3>
                         <p>Total Debit Balance</p>
                     </div>
                 </div>
                 <div class="col-md-6">
                     <div class="stats-card" style="background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);">
-                        <i class="fas fa-chart-line"></i>
+                        <i class="fas fa-arrow-left"></i>
                         <h3><?php echo $currency; ?> <?php echo number_format($total_credit, 2); ?></h3>
                         <p>Total Credit Balance</p>
                     </div>
@@ -144,6 +150,7 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
             <div class="card">
                 <div class="card-header bg-primary text-white">
                     <h5><i class="fas fa-list"></i> Trial Balance as on <?php echo date('d F Y', strtotime($as_on)); ?></h5>
+                    <small class="d-block text-light">Click on any account to view detailed ledger</small>
                 </div>
                 <div class="card-body">
                     <div class="table-responsive">
@@ -159,7 +166,9 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                             </thead>
                             <tbody>
                                 <?php foreach($trial_balance as $tb): ?>
-                                <tr>
+                                <tr class="clickable-row" 
+                                    onclick="window.open('general_ledger.php?account_id=<?php echo $tb['id']; ?>&from_date=<?php echo date('Y-01-01'); ?>&to_date=<?php echo $as_on; ?>', '_blank')"
+                                    title="Click to view ledger for <?php echo $tb['name']; ?>">
                                     <td><?php echo $tb['code']; ?></td>
                                     <td><strong><?php echo $tb['name']; ?></strong></td>
                                     <td><?php echo ucfirst($tb['type']); ?></td>
@@ -175,7 +184,7 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                                     <td class="text-end"><?php echo number_format($total_credit, 2); ?></td>
                                 </tr>
                             </tfoot>
-                         </div>
+                        </table>
                     </div>
                 </div>
             </div>
@@ -183,11 +192,11 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
             <!-- Verification Message -->
             <?php if(abs($total_debit - $total_credit) < 0.01): ?>
                 <div class="alert alert-success mt-3 text-center no-print">
-                    <i class="fas fa-check-circle"></i> Trial Balance is balanced! Debit = Credit
+                    <i class="fas fa-check-circle"></i> ✅ Trial Balance is balanced! Debit = Credit
                 </div>
             <?php else: ?>
                 <div class="alert alert-danger mt-3 text-center no-print">
-                    <i class="fas fa-exclamation-triangle"></i> Trial Balance is NOT balanced! Difference: <?php echo $currency; ?> <?php echo number_format(abs($total_debit - $total_credit), 2); ?>
+                    <i class="fas fa-exclamation-triangle"></i> ⚠️ Trial Balance is NOT balanced! Difference: <?php echo $currency; ?> <?php echo number_format(abs($total_debit - $total_credit), 2); ?>
                 </div>
             <?php endif; ?>
         </div>
