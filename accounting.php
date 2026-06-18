@@ -92,7 +92,7 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['save_voucher'])) {
     }
 }
 
-// Get accounts for dropdown
+// Get accounts for dropdown - including new GAS and advance accounts
 $accounts = $pdo->query("SELECT * FROM chart_of_accounts WHERE is_active = 1 ORDER BY account_code")->fetchAll();
 $vouchers = $pdo->query("SELECT v.*, u.full_name as creator FROM vouchers v JOIN users u ON v.created_by = u.id ORDER BY v.created_at DESC LIMIT 50")->fetchAll();
 
@@ -120,6 +120,9 @@ foreach($accounts as $acc) {
     }
     $account_balances[$acc['id']] = $current_balance;
 }
+
+// Get currency
+$currency = $settings['currency_symbol'] ?? 'BDT';
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -131,86 +134,20 @@ foreach($accounts as $acc) {
     <link rel="stylesheet" href="https://cdn.datatables.net/1.11.5/css/dataTables.bootstrap5.min.css">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
-        /* Main Layout Styles */
-        .main-content {
-            padding: 20px;
-            min-height: 100vh;
-        }
+        .main-content { padding: 20px; min-height: 100vh; }
+        .form-card { position: sticky; top: 20px; z-index: 100; }
+        .row { position: relative; }
+        .col-md-8 { position: relative; z-index: 1; }
+        .col-md-4 { position: relative; z-index: 2; }
+        .dataTables_wrapper { overflow-x: auto; clear: both; margin-top: 10px; }
+        .dataTables_filter { margin-bottom: 20px; float: right; }
+        .dataTables_length { margin-bottom: 20px; float: left; }
+        .dataTables_filter input { margin-left: 10px; padding: 5px 10px; border-radius: 4px; border: 1px solid #ddd; }
+        .dataTables_info, .dataTables_paginate { margin-top: 20px; }
+        .table-responsive { overflow-x: auto; overflow-y: visible; max-height: none; }
+        .balance-positive { color: #28a745; font-weight: bold; }
+        .balance-negative { color: #dc3545; font-weight: bold; }
         
-        /* Fix for sticky form card - NO OVERLAP */
-        .form-card { 
-            position: sticky; 
-            top: 20px; 
-            z-index: 100;
-        }
-        
-        /* Ensure proper spacing between columns */
-        .row {
-            position: relative;
-        }
-        
-        .col-md-8 {
-            position: relative;
-            z-index: 1;
-        }
-        
-        .col-md-4 {
-            position: relative;
-            z-index: 2;
-        }
-        
-        /* Fix DataTable controls spacing */
-        .dataTables_wrapper {
-            overflow-x: auto;
-            clear: both;
-            margin-top: 10px;
-        }
-        
-        .dataTables_filter {
-            margin-bottom: 20px;
-            float: right;
-        }
-        
-        .dataTables_length {
-            margin-bottom: 20px;
-            float: left;
-        }
-        
-        .dataTables_filter input {
-            margin-left: 10px;
-            padding: 5px 10px;
-            border-radius: 4px;
-            border: 1px solid #ddd;
-        }
-        
-        .dataTables_info, .dataTables_paginate {
-            margin-top: 20px;
-        }
-        
-        /* Clear floats */
-        .dataTables_wrapper .dataTables_filter,
-        .dataTables_wrapper .dataTables_length {
-            margin-bottom: 20px;
-        }
-        
-        /* Table responsive */
-        .table-responsive {
-            overflow-x: auto;
-            overflow-y: visible;
-            max-height: none;
-        }
-        
-        /* Balance styles */
-        .balance-positive { 
-            color: #28a745; 
-            font-weight: bold; 
-        }
-        .balance-negative { 
-            color: #dc3545; 
-            font-weight: bold; 
-        }
-        
-        /* Tab Styles */
         .nav-tabs {
             border-bottom: 2px solid #e0e0e0;
             margin-bottom: 20px;
@@ -220,11 +157,7 @@ foreach($accounts as $acc) {
             z-index: 45;
             padding-top: 5px;
         }
-        
-        .nav-tabs .nav-item {
-            margin-bottom: -2px;
-        }
-        
+        .nav-tabs .nav-item { margin-bottom: -2px; }
         .nav-tabs .nav-link {
             color: #6c757d;
             font-weight: 500;
@@ -233,25 +166,15 @@ foreach($accounts as $acc) {
             border-bottom: 2px solid transparent;
             transition: all 0.3s ease;
         }
-        
-        .nav-tabs .nav-link:hover {
-            color: #667eea;
-            border-bottom-color: #667eea;
-            background: transparent;
-        }
-        
+        .nav-tabs .nav-link:hover { color: #667eea; border-bottom-color: #667eea; background: transparent; }
         .nav-tabs .nav-link.active {
             color: #667eea;
             background: transparent;
             border-bottom: 2px solid #667eea;
             font-weight: 600;
         }
+        .nav-tabs .nav-link i { margin-right: 8px; }
         
-        .nav-tabs .nav-link i {
-            margin-right: 8px;
-        }
-        
-        /* Report Card Styles */
         .report-card {
             background: white;
             border-radius: 12px;
@@ -262,104 +185,36 @@ foreach($accounts as $acc) {
             text-align: center;
             cursor: pointer;
         }
-        .report-card:hover {
-            transform: translateY(-5px);
-            box-shadow: 0 5px 20px rgba(0,0,0,0.1);
-        }
-        .report-icon {
-            font-size: 48px;
-            margin-bottom: 15px;
-        }
-        .report-title {
-            font-size: 18px;
-            font-weight: 600;
-            margin-bottom: 5px;
-        }
-        .report-desc {
-            font-size: 12px;
-            color: #666;
-        }
+        .report-card:hover { transform: translateY(-5px); box-shadow: 0 5px 20px rgba(0,0,0,0.1); }
+        .report-icon { font-size: 48px; margin-bottom: 15px; }
+        .report-title { font-size: 18px; font-weight: 600; margin-bottom: 5px; }
+        .report-desc { font-size: 12px; color: #666; }
         
-        /* Table row hover */
-        .edit-row { 
-            cursor: pointer; 
-        }
-        .edit-row:hover { 
-            background-color: #f0f0f0 !important; 
-        }
+        .edit-row { cursor: pointer; }
+        .edit-row:hover { background-color: #f0f0f0 !important; }
         
-        /* Voucher table styles */
-        .voucher-row-remove {
-            cursor: pointer;
-        }
-        
-        /* Mobile responsive */
         @media (max-width: 768px) {
-            .form-card {
-                position: relative;
-                top: 0;
-                margin-bottom: 20px;
-            }
-            .nav-tabs .nav-link {
-                padding: 8px 12px;
-                font-size: 12px;
-            }
-            .dataTables_filter {
-                float: none;
-                text-align: right;
-                margin-bottom: 15px;
-            }
-            .dataTables_length {
-                float: none;
-                margin-bottom: 15px;
-            }
+            .form-card { position: relative; top: 0; margin-bottom: 20px; }
+            .nav-tabs .nav-link { padding: 8px 12px; font-size: 12px; }
+            .dataTables_filter { float: none; text-align: right; margin-bottom: 15px; }
+            .dataTables_length { float: none; margin-bottom: 15px; }
         }
         
-        /* Print styles */
         @media print {
             .sidebar, .main-content .container-fluid .d-flex, .nav-tabs, .btn, .alert,
             .card-header .btn, .form-card, .col-md-4, .dataTables_length, .dataTables_filter,
-            .dataTables_paginate, .dataTables_info, .no-print { 
-                display: none !important; 
-            }
-            .col-md-8 { 
-                width: 100% !important; 
-                margin: 0 !important; 
-                padding: 0 !important; 
-            }
-            .main-content { 
-                margin: 0 !important; 
-                padding: 0 !important; 
-            }
-            .table th, .table td { 
-                border: 1px solid #000 !important; 
-            }
-            .print-report-header { 
-                display: block !important; 
-                text-align: center; 
-                margin-bottom: 20px; 
-            }
+            .dataTables_paginate, .dataTables_info, .no-print { display: none !important; }
+            .col-md-8 { width: 100% !important; margin: 0 !important; padding: 0 !important; }
+            .main-content { margin: 0 !important; padding: 0 !important; }
+            .table th, .table td { border: 1px solid #000 !important; }
+            .print-report-header { display: block !important; text-align: center; margin-bottom: 20px; }
         }
-        .print-report-header { 
-            display: none; 
-        }
+        .print-report-header { display: none; }
         
-        /* Custom scrollbar */
-        ::-webkit-scrollbar {
-            width: 8px;
-            height: 8px;
-        }
-        ::-webkit-scrollbar-track {
-            background: #f1f1f1;
-            border-radius: 10px;
-        }
-        ::-webkit-scrollbar-thumb {
-            background: #888;
-            border-radius: 10px;
-        }
-        ::-webkit-scrollbar-thumb:hover {
-            background: #555;
-        }
+        ::-webkit-scrollbar { width: 8px; height: 8px; }
+        ::-webkit-scrollbar-track { background: #f1f1f1; border-radius: 10px; }
+        ::-webkit-scrollbar-thumb { background: #888; border-radius: 10px; }
+        ::-webkit-scrollbar-thumb:hover { background: #555; }
     </style>
 </head>
 <body>
@@ -377,16 +232,10 @@ foreach($accounts as $acc) {
             </div>
             
             <?php if($error): ?>
-                <div class="alert alert-danger alert-dismissible fade show">
-                    <i class="fas fa-exclamation-circle"></i> <?php echo $error; ?>
-                    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
-                </div>
+                <div class="alert alert-danger"><?php echo $error; ?></div>
             <?php endif; ?>
             <?php if($success): ?>
-                <div class="alert alert-success alert-dismissible fade show">
-                    <i class="fas fa-check-circle"></i> <?php echo $success; ?>
-                    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
-                </div>
+                <div class="alert alert-success"><?php echo $success; ?></div>
             <?php endif; ?>
             
             <!-- Tabs -->
@@ -505,13 +354,19 @@ foreach($accounts as $acc) {
                     
                     <div class="card mt-3">
                         <div class="card-header bg-info text-white">
-                            <h6><i class="fas fa-info-circle"></i> Balance Type Guide</h6>
+                            <h6><i class="fas fa-info-circle"></i> Account Types Guide</h6>
                         </div>
                         <div class="card-body">
                             <ul class="mb-0">
                                 <li><span class="text-success fw-bold">Debit (Dr)</span> - Assets, Expenses</li>
                                 <li><span class="text-danger fw-bold">Credit (Cr)</span> - Liabilities, Equity, Income</li>
                                 <hr>
+                                <li><strong>New Accounts Added:</strong></li>
+                                <li><span class="text-info">3300</span> - Customer Advance (Liability)</li>
+                                <li><span class="text-info">2100</span> - Supplier Advance (Asset)</li>
+                                <li><span class="text-info">5110</span> - Salary Expense</li>
+                                <li><span class="text-info">5120</span> - Bonus Expense</li>
+                                <li><span class="text-info">1200</span> - Fuel Inventory</li>
                                 <li><small><i class="fas fa-lightbulb"></i> Tip: Click on any row to edit</small></li>
                             </ul>
                         </div>
@@ -589,17 +444,16 @@ foreach($accounts as $acc) {
                                                    onclick="return confirm('Delete this account? This will also delete all related transactions!')">
                                                     <i class="fas fa-trash"></i>
                                                 </a>
-                                                </div>
                                             </td>
                                         </tr>
                                         <?php endforeach; ?>
                                     </tbody>
                                     <tfoot class="table-light">
                                         <tr class="fw-bold">
-                                            <td colspan="3" class="text-end">TOTAL:   </td>
-                                            <td class="text-end"><?php echo number_format($total_opening, 2); ?>   </td>
-                                            <td class="text-end"><?php echo number_format($total_current, 2); ?>   </td>
-                                            <td colspan="2" class="no-print">   </td>
+                                            <td colspan="3" class="text-end">TOTAL:</td>
+                                            <td class="text-end"><?php echo number_format($total_opening, 2); ?></td>
+                                            <td class="text-end"><?php echo number_format($total_current, 2); ?></td>
+                                            <td colspan="2" class="no-print"></td>
                                         </tr>
                                     </tfoot>
                                 </table>
@@ -610,9 +464,7 @@ foreach($accounts as $acc) {
             </div>
             <?php endif; ?>
             
-            <!-- ===================================================== -->
-            <!-- VOUCHER ENTRY TAB - REDIRECT TO WORKING VOUCHER ENTRY -->
-            <!-- ===================================================== -->
+            <!-- Voucher Entry Tab -->
             <?php if($active_tab == 'voucher'): ?>
             <div class="row mt-3">
                 <div class="col-md-12">
@@ -629,28 +481,18 @@ foreach($accounts as $acc) {
                                 <strong>Voucher Entry System</strong><br>
                                 Use the link below to access the full voucher entry system.
                             </div>
-                            
                             <div class="text-center py-4">
                                 <a href="voucher_entry.php" class="btn btn-success btn-lg">
                                     <i class="fas fa-file-invoice"></i> Go to Voucher Entry
                                 </a>
-                                <br>
-                                <small class="text-muted mt-2 d-block">Opens in the same window</small>
                             </div>
                             
-                            <!-- Show recent vouchers -->
                             <div class="mt-4">
                                 <h6><i class="fas fa-history"></i> Recent Vouchers</h6>
                                 <div class="table-responsive">
                                     <table class="table table-bordered table-sm">
                                         <thead class="table-dark">
-                                            <tr>
-                                                <th>Voucher No</th>
-                                                <th>Date</th>
-                                                <th>Type</th>
-                                                <th>Narration</th>
-                                                <th>Actions</th>
-                                            </tr>
+                                            <tr><th>Voucher No</th><th>Date</th><th>Type</th><th>Narration</th><th>Actions</th></tr>
                                         </thead>
                                         <tbody>
                                             <?php 
@@ -672,13 +514,8 @@ foreach($accounts as $acc) {
                                                     </a>
                                                 </td>
                                             </tr>
-                                            <?php 
-                                                endforeach;
-                                            else:
-                                            ?>
-                                            <tr>
-                                                <td colspan="5" class="text-center text-muted">No vouchers found</td>
-                                            </tr>
+                                            <?php endforeach; else: ?>
+                                            <tr><td colspan="5" class="text-center text-muted">No vouchers found</td></tr>
                                             <?php endif; ?>
                                         </tbody>
                                     </table>
@@ -727,15 +564,13 @@ foreach($accounts as $acc) {
                                         </td>
                                         <td class="text-center">
                                             <a href="view_voucher.php?id=<?php echo $v['id']; ?>" class="btn btn-sm btn-info" target="_blank">
-                                                <i class="fas fa-eye"></i> View
+                                                <i class="fas fa-eye"></i>
                                             </a>
                                         </td>
                                     </tr>
                                     <?php endforeach; ?>
                                     <?php if(empty($vouchers)): ?>
-                                    <tr>
-                                        <td colspan="7" class="text-center text-muted">No vouchers found</td>
-                                    </tr>
+                                    <tr><td colspan="7" class="text-center text-muted">No vouchers found</td></tr>
                                     <?php endif; ?>
                                 </tbody>
                             </table>
@@ -748,78 +583,56 @@ foreach($accounts as $acc) {
             <!-- Reports Tab -->
             <?php if($active_tab == 'reports'): ?>
             <div class="row mt-3">
-                <!-- Row 1: Financial Reports -->
                 <div class="col-md-12">
                     <h4 class="mb-3"><i class="fas fa-chart-line"></i> Financial Reports</h4>
                 </div>
-                
                 <div class="col-md-4">
                     <div class="report-card" onclick="window.open('balance_sheet.php', '_blank')">
-                        <div class="report-icon">
-                            <i class="fas fa-balance-scale text-primary"></i>
-                        </div>
+                        <div class="report-icon"><i class="fas fa-balance-scale text-primary"></i></div>
                         <div class="report-title">Balance Sheet</div>
                         <div class="report-desc">Statement of assets, liabilities and equity</div>
                     </div>
                 </div>
-                
                 <div class="col-md-4">
                     <div class="report-card" onclick="window.open('profit_loss.php', '_blank')">
-                        <div class="report-icon">
-                            <i class="fas fa-chart-line text-success"></i>
-                        </div>
+                        <div class="report-icon"><i class="fas fa-chart-line text-success"></i></div>
                         <div class="report-title">Profit & Loss</div>
                         <div class="report-desc">Income and expense statement</div>
                     </div>
                 </div>
-                
                 <div class="col-md-4">
                     <div class="report-card" onclick="window.open('trial_balance.php', '_blank')">
-                        <div class="report-icon">
-                            <i class="fas fa-list-ul text-info"></i>
-                        </div>
+                        <div class="report-icon"><i class="fas fa-list-ul text-info"></i></div>
                         <div class="report-title">Trial Balance</div>
                         <div class="report-desc">Summary of all ledger balances</div>
                     </div>
                 </div>
-                
-                <!-- Row 2: Ledger Reports -->
                 <div class="col-md-12 mt-4">
                     <h4 class="mb-3"><i class="fas fa-book"></i> Ledger Reports</h4>
                 </div>
-                
                 <div class="col-md-4">
                     <div class="report-card" onclick="window.open('general_ledger.php', '_blank')">
-                        <div class="report-icon">
-                            <i class="fas fa-scroll text-warning"></i>
-                        </div>
+                        <div class="report-icon"><i class="fas fa-scroll text-warning"></i></div>
                         <div class="report-title">General Ledger</div>
                         <div class="report-desc">Account-wise transaction details</div>
                     </div>
                 </div>
-                
                 <div class="col-md-4">
                     <div class="report-card" onclick="window.open('cash_flow.php', '_blank')">
-                        <div class="report-icon">
-                            <i class="fas fa-money-bill-wave text-danger"></i>
-                        </div>
+                        <div class="report-icon"><i class="fas fa-money-bill-wave text-danger"></i></div>
                         <div class="report-title">Cash Flow Statement</div>
                         <div class="report-desc">Cash inflow and outflow statement</div>
                     </div>
                 </div>
-                
                 <div class="col-md-4">
                     <div class="report-card" onclick="window.open('accounting.php?tab=chart', '_blank')">
-                        <div class="report-icon">
-                            <i class="fas fa-list text-secondary"></i>
-                        </div>
+                        <div class="report-icon"><i class="fas fa-list text-secondary"></i></div>
                         <div class="report-title">Chart of Accounts</div>
                         <div class="report-desc">Complete account list with balances</div>
                     </div>
                 </div>
             </div>
             
-            <!-- Quick Report Generation Section -->
             <div class="card mt-4">
                 <div class="card-header bg-primary text-white">
                     <h5><i class="fas fa-calendar-alt"></i> Quick Report Generation</h5>
@@ -989,7 +802,6 @@ foreach($accounts as $acc) {
     <script src="https://cdn.datatables.net/1.11.5/js/jquery.dataTables.min.js"></script>
     <script>
         $(document).ready(function() {
-            // Initialize DataTable for Chart of Accounts
             $('#accountsTable').DataTable({
                 order: [[0, 'asc']],
                 pageLength: 25,
@@ -1008,7 +820,6 @@ foreach($accounts as $acc) {
                 }
             });
             
-            // Initialize DataTable for Vouchers
             $('#vouchersTable').DataTable({
                 order: [[1, 'desc']],
                 pageLength: 25,
@@ -1019,7 +830,6 @@ foreach($accounts as $acc) {
                 }
             });
             
-            // Click on row to edit account
             $('.edit-row').on('click', function() {
                 window.location.href = $(this).data('href');
             });
@@ -1037,17 +847,15 @@ foreach($accounts as $acc) {
                                     </option>
                                 <?php endforeach; ?>
                             </select>
-                        </div>
                         </td>
                         <td><input type="number" name="debit[]" class="form-control debit" step="0.01" value="0"></td>
-                        <td><input type="number" name="credit[]" class="form-control credit" step="0.01" value="0"></div>
+                        <td><input type="number" name="credit[]" class="form-control credit" step="0.01" value="0"></td>
                         <td><button type="button" class="btn btn-danger btn-sm remove-row">×</button></td>
                     </tr>
                 `;
                 $('#voucherTable tbody').append(newRow);
             });
             
-            // Remove row
             $(document).on('click', '.remove-row', function() {
                 if($('#voucherTable tbody tr').length > 1) {
                     $(this).closest('tr').remove();
@@ -1057,7 +865,6 @@ foreach($accounts as $acc) {
                 }
             });
             
-            // Calculate totals
             $(document).on('input', '.debit, .credit', function() {
                 calculateTotals();
             });
@@ -1086,10 +893,8 @@ foreach($accounts as $acc) {
                 }
             }
             
-            // Initial calculation
             calculateTotals();
             
-            // Prevent double form submission
             $('#voucherForm').on('submit', function() {
                 $(this).find('button[type="submit"]').prop('disabled', true).html('<i class="fas fa-spinner fa-spin"></i> Saving...');
             });

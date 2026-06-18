@@ -245,6 +245,7 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                     </div>
                 </div>
             </div>
+  
             
             <!-- Statistics Cards Row 1 -->
             <div class="row">
@@ -318,6 +319,59 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                 </div>
             </div>
             
+            <!-- CNG Sales Widget -->
+            <div class="col-md-4">
+                <div class="card">
+                    <div class="card-header bg-info text-white">
+                        <i class="fas fa-gas-pump"></i> CNG Sales Today
+                        <a href="cng_sales_report.php" class="btn btn-sm btn-light float-end">View All</a>
+                    </div>
+                    <div class="card-body">
+                        <?php
+                        $today = date('Y-m-d');
+                        $stmt = $pdo->prepare("
+                            SELECT 
+                                COUNT(*) as total_sales,
+                                SUM(quantity_liters) as total_units,
+                                SUM(total_amount) as total_amount,
+                                SUM(CASE WHEN sale_type = 'cash' THEN total_amount ELSE 0 END) as cash_amount,
+                                SUM(CASE WHEN sale_type = 'credit' THEN total_amount ELSE 0 END) as credit_amount
+                            FROM gas_sales 
+                            WHERE DATE(sale_date) = ?
+                            AND status = 'completed'
+                        ");
+                        $stmt->execute([$today]);
+                        $cng_today = $stmt->fetch();
+                        ?>
+                        <div class="row text-center">
+                            <div class="col-6 border-end">
+                                <h4><?php echo number_format($cng_today['total_units'] ?? 0, 2); ?> m³</h4>
+                                <small class="text-muted">Total CNG Sold</small>
+                            </div>
+                            <div class="col-6">
+                                <h4 class="text-success">BDT <?php echo number_format($cng_today['total_amount'] ?? 0, 2); ?></h4>
+                                <small class="text-muted">Total Revenue</small>
+                            </div>
+                        </div>
+                        <hr>
+                        <div class="row text-center">
+                            <div class="col-6 border-end">
+                                <span class="badge bg-success">Cash</span>
+                                <h6>BDT <?php echo number_format($cng_today['cash_amount'] ?? 0, 2); ?></h6>
+                            </div>
+                            <div class="col-6">
+                                <span class="badge bg-warning">Credit</span>
+                                <h6>BDT <?php echo number_format($cng_today['credit_amount'] ?? 0, 2); ?></h6>
+                            </div>
+                        </div>
+                        <div class="mt-2">
+                            <small class="text-muted">
+                                <i class="fas fa-shopping-cart"></i> <?php echo $cng_today['total_sales'] ?? 0; ?> transactions today
+                            </small>
+                        </div>
+                    </div>
+                </div>
+            </div>
             <!-- Charts Row -->
             <div class="row">
                 <div class="col-lg-8">

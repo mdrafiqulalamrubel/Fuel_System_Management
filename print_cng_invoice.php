@@ -2,8 +2,8 @@
 require_once 'config/database.php';
 if(!isLoggedIn()) redirect('index.php');
 
-// Get invoice from session or URL
-$invoice_no = isset($_GET['invoice']) ? $_GET['invoice'] : ($_SESSION['last_gas_invoice']['invoice_no'] ?? '');
+// Get invoice from URL or session - FIXED: Use consistent session key
+$invoice_no = isset($_GET['invoice']) ? $_GET['invoice'] : (isset($_SESSION['last_cng_invoice']['invoice_no']) ? $_SESSION['last_cng_invoice']['invoice_no'] : '');
 
 if(empty($invoice_no)) {
     die('No invoice found to print');
@@ -13,13 +13,11 @@ if(empty($invoice_no)) {
 $stmt = $pdo->prepare("
     SELECT gs.*, 
            n.nozzle_name, 
-           t.tank_name,
            sh.shift_name,
            u.full_name as operator_name
     FROM gas_sales gs
     JOIN nozzles n ON gs.nozzle_id = n.id
-    JOIN tanks t ON n.tank_id = t.id
-    LEFT JOIN shifts sh ON gs.shift_id = sh.id
+    LEFT JOIN shift_schedule sh ON gs.shift_id = sh.id
     LEFT JOIN users u ON gs.operator_id = u.id
     WHERE gs.invoice_no = ?
 ");
@@ -43,7 +41,7 @@ $invoice_footer = $settings['invoice_footer'] ?? '*** THANK YOU ***';
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>GAS Invoice - <?php echo $invoice_no; ?></title>
+    <title>CNG Invoice - <?php echo $invoice_no; ?></title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
@@ -125,6 +123,23 @@ $invoice_footer = $settings['invoice_footer'] ?? '*** THANK YOU ***';
             border-radius: 8px;
             margin-bottom: 15px;
         }
+        .pipeline-badge {
+            background: #0d6efd;
+            color: white;
+            padding: 3px 12px;
+            border-radius: 15px;
+            font-size: 12px;
+        }
+        /* Thermal print button style */
+        .btn-thermal {
+            background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);
+            color: white;
+            border: none;
+        }
+        .btn-thermal:hover {
+            color: white;
+            opacity: 0.9;
+        }
     </style>
 </head>
 <body>
@@ -136,8 +151,12 @@ $invoice_footer = $settings['invoice_footer'] ?? '*** THANK YOU ***';
                 <button onclick="window.print()" class="btn btn-primary">
                     <i class="fas fa-print"></i> Print Invoice
                 </button>
+                <!-- THERMAL PRINT BUTTON - ADDED -->
+                <a href="print_thermal_receipt.php?invoice=<?php echo $invoice_no; ?>&type=cng" class="btn btn-thermal" target="_blank">
+                    <i class="fas fa-receipt"></i> Thermal Receipt
+                </a>
                 <a href="gas_sales.php" class="btn btn-secondary">
-                    <i class="fas fa-arrow-left"></i> Back to GAS Sales
+                    <i class="fas fa-arrow-left"></i> Back to CNG Sales
                 </a>
                 <a href="dashboard.php" class="btn btn-info">
                     <i class="fas fa-home"></i> Dashboard
@@ -158,7 +177,7 @@ $invoice_footer = $settings['invoice_footer'] ?? '*** THANK YOU ***';
                         </div>
                         <div class="col-md-5">
                             <div class="invoice-title">
-                                <i class="fas fa-gas-pump"></i> GAS INVOICE
+                                <i class="fas fa-gas-pump"></i> CNG INVOICE
                             </div>
                             <div class="text-end">
                                 <strong>Invoice No:</strong> <?php echo $invoice_no; ?><br>
@@ -167,6 +186,13 @@ $invoice_footer = $settings['invoice_footer'] ?? '*** THANK YOU ***';
                             </div>
                         </div>
                     </div>
+                </div>
+                
+                <!-- Pipeline Info -->
+                <div class="alert alert-info py-1">
+                    <i class="fas fa-pipe"></i> 
+                    <strong>Source:</strong> Government Pipeline (Titas Gas) 
+                    <span class="badge pipeline-badge float-end">Pipeline Nozzle</span>
                 </div>
                 
                 <!-- Customer Info -->
@@ -189,20 +215,16 @@ $invoice_footer = $settings['invoice_footer'] ?? '*** THANK YOU ***';
                 </div>
                 <?php endif; ?>
                 
-                <!-- Meter Readings -->
+                <!-- Nozzle Info -->
                 <div class="meter-box">
                     <div class="row text-center">
-                        <div class="col-md-4">
+                        <div class="col-md-6">
                             <small class="text-muted">Nozzle</small><br>
                             <strong><?php echo $sale['nozzle_name']; ?></strong>
                         </div>
-                        <div class="col-md-4">
-                            <small class="text-muted">Tank</small><br>
-                            <strong><?php echo $sale['tank_name']; ?></strong>
-                        </div>
-                        <div class="col-md-4">
+                        <div class="col-md-6">
                             <small class="text-muted">Operator</small><br>
-                            <strong><?php echo $sale['operator_name']; ?></strong>
+                            <strong><?php echo $sale['operator_name'] ?? 'N/A'; ?></strong>
                         </div>
                     </div>
                 </div>
@@ -220,7 +242,7 @@ $invoice_footer = $settings['invoice_footer'] ?? '*** THANK YOU ***';
                         </div>
                         <div class="col-md-4">
                             <small>Quantity Dispensed</small><br>
-                            <span class="meter-reading" style="font-size: 24px;"><?php echo number_format($sale['quantity_liters'], 2); ?> L</span>
+                            <span class="meter-reading" style="font-size: 24px;"><?php echo number_format($sale['quantity_liters'], 2); ?> m³</span>
                         </div>
                     </div>
                 </div>
@@ -231,7 +253,7 @@ $invoice_footer = $settings['invoice_footer'] ?? '*** THANK YOU ***';
                         <tr>
                             <th>#</th>
                             <th>Description</th>
-                            <th class="text-end">Quantity (L)</th>
+                            <th class="text-end">Quantity (m³)</th>
                             <th class="text-end">Unit Price</th>
                             <th class="text-end">Total</th>
                         </tr>
@@ -240,8 +262,9 @@ $invoice_footer = $settings['invoice_footer'] ?? '*** THANK YOU ***';
                         <tr>
                             <td>1</td>
                             <td>
-                                <strong>Natural Gas / CNG</strong>
-                                <br><small>Meter: <?php echo number_format($sale['opening_meter'], 2); ?> → <?php echo number_format($sale['closing_meter'], 2); ?></small>
+                                <strong>Compressed Natural Gas (CNG)</strong>
+                                <br><small>Meter: <?php echo number_format($sale['opening_meter'], 2); ?> → <?php echo number_format($sale['closing_meter'], 2); ?> m³</small>
+                                <br><small class="text-muted"><i class="fas fa-pipe"></i> Pipeline Supply</small>
                             </td>
                             <td class="text-end"><?php echo number_format($sale['quantity_liters'], 2); ?></td>
                             <td class="text-end"><?php echo $currency; ?> <?php echo number_format($sale['unit_price'], 2); ?></td>

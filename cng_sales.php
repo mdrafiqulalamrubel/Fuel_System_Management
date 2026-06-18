@@ -21,9 +21,7 @@ if(!$active_shift) {
     $error = "⚠️ No active shift! Please <a href='shift_closing.php' class='alert-link'>start a shift</a> first.";
 }
 
-// =============================================
-// FIXED: Get CNG nozzles - PIPELINE nozzles only (no tank association)
-// =============================================
+// Get CNG nozzles only (pipeline nozzles - no tank association)
 $cng_nozzles = $pdo->query("
     SELECT 
         n.*, 
@@ -56,37 +54,22 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['make_cng_sale'])) {
     $sale_type = $_POST['sale_type'];
     $customer_name = isset($_POST['customer_name']) ? $_POST['customer_name'] : '';
     $customer_phone = isset($_POST['customer_phone']) ? $_POST['customer_phone'] : '';
-    $input_type = $_POST['input_type'] ?? 'amount'; // 'amount' or 'unit'
-    $amount_input = isset($_POST['amount_input']) ? floatval($_POST['amount_input']) : 0;
-    $unit_input = isset($_POST['unit_input']) ? floatval($_POST['unit_input']) : 0;
     
-    // Calculate based on input type
-    if($input_type == 'amount' && $amount_input > 0) {
-        // Customer gave amount (TK) - calculate units
-        $total_amount = $amount_input;
-        $quantity = $total_amount / $unit_price;
-        $closing_meter = $opening_meter + $quantity;
-    } else if($input_type == 'unit' && $unit_input > 0) {
-        // Customer gave units (m³) - calculate amount
-        $quantity = $unit_input;
-        $total_amount = $quantity * $unit_price;
-        $closing_meter = $opening_meter + $quantity;
-    } else {
-        // Fallback: use meter difference
-        $quantity = $closing_meter - $opening_meter;
-        $total_amount = $quantity * $unit_price;
-    }
+    // Calculate quantity (difference in meter reading)
+    $quantity = $closing_meter - $opening_meter;
     
-    $received = isset($_POST['received']) ? floatval($_POST['received']) : $total_amount;
+    // Total amount
+    $total_amount = $quantity * $unit_price;
+    $received = isset($_POST['received']) ? floatval($_POST['received']) : 0;
     $change = $received - $total_amount;
     
     if($quantity <= 0) {
-        $error = "Invalid quantity! Please check your input.";
+        $error = "Invalid quantity! Closing meter must be greater than opening meter.";
     } else {
         try {
             $pdo->beginTransaction();
             
-            // Insert into gas_sales table (no stock update for CNG)
+            // Insert into gas_sales table
             $stmt = $pdo->prepare("
                 INSERT INTO gas_sales (
                     invoice_no, sale_date, shift_id, nozzle_id, operator_id,
@@ -104,7 +87,7 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['make_cng_sale'])) {
             
             $sale_id = $pdo->lastInsertId();
             
-            // Update nozzle closing meter only (NO STOCK UPDATE for CNG)
+            // Update nozzle closing meter
             $stmt = $pdo->prepare("UPDATE nozzles SET closing_meter = ? WHERE id = ?");
             $stmt->execute([$closing_meter, $nozzle_id]);
             
@@ -124,6 +107,7 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['make_cng_sale'])) {
                 $sales_id = $sales_account['id'];
             }
             
+            // For cash sale
             if($sale_type == 'cash' && $cash_account && $sales_account) {
                 $voucher_no = 'CNG-CASH-' . date('YmdHis') . rand(100, 999);
                 $narration = "CNG sale - $invoice_no - Quantity: " . number_format($quantity, 2) . " m³ - Amount: BDT " . number_format($total_amount, 2);
@@ -189,6 +173,7 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['make_cng_sale'])) {
             
             $pdo->commit();
             
+            // Store in session - FIXED: Use consistent session key
             $_SESSION['last_cng_invoice'] = [
                 'invoice_no' => $invoice_no,
                 'customer_name' => $customer_name,
@@ -202,34 +187,12 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['make_cng_sale'])) {
                 'total' => $total_amount,
                 'received' => $received,
                 'change' => $change,
-                'input_type' => $input_type,
-                'sale_type' => $sale_type
+                'sale_type' => $sale_type,
+                'nozzle_name' => $_POST['nozzle_name'] ?? 'CNG Nozzle'
             ];
             
-            $success = "✅ CNG sale completed! Invoice: $invoice_no<br>
-                        <strong>Quantity:</strong> " . number_format($quantity, 2) . " m³<br>
-                        <strong>Amount:</strong> BDT " . number_format($total_amount, 2);
-            
-            // =============================================
-            // THERMAL PRINTING OPTION - ADDED
-            // =============================================
-            ?>
-            <div class="alert alert-success alert-dismissible fade show">
-                <h5><i class="fas fa-check-circle"></i> <?php echo $success; ?></h5>
-                <div class="mt-3">
-                    <a href="print_thermal_receipt.php?invoice=<?php echo $invoice_no; ?>&type=cng" class="btn btn-primary" target="_blank">
-                        <i class="fas fa-receipt"></i> Thermal Receipt
-                    </a>
-                    <a href="print_cng_invoice.php?invoice=<?php echo $invoice_no; ?>" class="btn btn-secondary" target="_blank">
-                        <i class="fas fa-file-alt"></i> Full Invoice
-                    </a>
-                    <a href="gas_sales.php" class="btn btn-success">
-                        <i class="fas fa-plus"></i> New Sale
-                    </a>
-                </div>
-                <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
-            </div>
-            <?php
+            $success = "✅ CNG sale completed! Invoice: $invoice_no";
+            header("Location: print_cng_invoice.php?invoice=" . $invoice_no);
             exit();
             
         } catch(Exception $e) {
@@ -269,57 +232,8 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
         .total-amount { font-size: 32px; color: #28a745; }
         .shift-info { background: #fff3cd; padding: 10px; border-radius: 8px; margin-bottom: 15px; }
         .unit-badge { background: #17a2b8; color: white; padding: 2px 10px; border-radius: 15px; font-size: 12px; }
-        .input-toggle {
-            display: flex;
-            gap: 10px;
-            margin-bottom: 15px;
-        }
-        .input-btn {
-            flex: 1;
-            padding: 10px;
-            text-align: center;
-            cursor: pointer;
-            border-radius: 8px;
-            transition: all 0.3s;
-            border: 2px solid #dee2e6;
-        }
-        .input-btn.active {
-            background: #28a745;
-            color: white;
-            border-color: #28a745;
-        }
-        .input-btn.inactive {
-            background: #e9ecef;
-            color: #6c757d;
-            border-color: #dee2e6;
-        }
-        .input-btn.inactive:hover {
-            background: #d4edda;
-            border-color: #28a745;
-        }
-        .input-section {
-            display: none;
-        }
-        .input-section.active {
-            display: block;
-        }
-        .cng-info {
-            background: #d4edda;
-            border-left: 4px solid #28a745;
-            padding: 10px 15px;
-            border-radius: 8px;
-            margin-bottom: 15px;
-        }
-        .cng-info i { color: #28a745; }
-        .credit-badge { background: #ffc107; color: #856404; }
-        .cash-badge { background: #28a745; color: white; }
-        .pipeline-badge {
-            background: #0d6efd;
-            color: white;
-            padding: 2px 10px;
-            border-radius: 15px;
-            font-size: 11px;
-        }
+        .pipeline-info { background: #d4edda; border-left: 4px solid #28a745; padding: 10px 15px; border-radius: 8px; margin-bottom: 15px; }
+        .pipeline-info i { color: #28a745; }
     </style>
 </head>
 <body>
@@ -331,10 +245,10 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                 <h2><i class="fas fa-gas-pump"></i> CNG Sales (Cubic Meter)</h2>
                 <div>
                     <a href="cng_sales_report.php" class="btn btn-info">
-                        <i class="fas fa-chart-bar"></i> View Reports
+                        <i class="fas fa-chart-bar"></i> Reports
                     </a>
                     <a href="dashboard.php" class="btn btn-secondary">
-                        <i class="fas fa-arrow-left"></i> Back to Dashboard
+                        <i class="fas fa-arrow-left"></i> Dashboard
                     </a>
                 </div>
             </div>
@@ -342,6 +256,12 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
             <?php if($error): ?>
                 <div class="alert alert-danger alert-dismissible fade show">
                     <i class="fas fa-exclamation-circle"></i> <?php echo $error; ?>
+                    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                </div>
+            <?php endif; ?>
+            <?php if($success): ?>
+                <div class="alert alert-success alert-dismissible fade show">
+                    <i class="fas fa-check-circle"></i> <?php echo $success; ?>
                     <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
                 </div>
             <?php endif; ?>
@@ -359,12 +279,11 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
             </div>
             <?php endif; ?>
             
-            <!-- CNG Info -->
-            <div class="cng-info">
-                <i class="fas fa-info-circle"></i>
-                <strong>CNG Sales:</strong> Supplied by Titas Gas pipeline. No stock tracking required. 
-                Monthly bill will be generated separately based on meter readings.
-                <span class="badge pipeline-badge ms-2"><i class="fas fa-pipe"></i> Pipeline Nozzles</span>
+            <!-- Pipeline Info -->
+            <div class="pipeline-info">
+                <i class="fas fa-pipe"></i>
+                <strong>CNG Pipeline:</strong> CNG is supplied directly from government pipeline (Titas Gas). 
+                No tank stock tracking required. Sales are tracked via meter readings.
             </div>
             
             <div class="row">
@@ -389,7 +308,6 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                                                             data-current-meter="<?php echo $nozzle['closing_meter'] ?? 0; ?>"
                                                             data-nozzle-name="<?php echo $nozzle['nozzle_name']; ?>">
                                                         <?php echo $nozzle['nozzle_name']; ?> - <?php echo $nozzle['product_name']; ?>
-                                                        <span class="badge pipeline-badge"><i class="fas fa-pipe"></i> Pipeline</span>
                                                         (Current: <?php echo number_format($nozzle['closing_meter'] ?? 0, 2); ?> m³)
                                                     </option>
                                                 <?php endforeach; ?>
@@ -423,45 +341,12 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                                         <div class="col-md-6">
                                             <div class="mb-2">
                                                 <label>Closing Meter</label>
-                                                <input type="number" name="closing_meter" id="closing_meter" class="form-control meter-display" step="0.01" placeholder="Enter closing meter reading">
+                                                <input type="number" name="closing_meter" id="closing_meter" class="form-control meter-display" step="0.01" required>
                                             </div>
                                         </div>
                                     </div>
-                                </div>
-                                
-                                <!-- Input Method Toggle -->
-                                <div class="input-toggle">
-                                    <div class="input-btn active" data-method="amount" onclick="toggleInputMethod('amount')">
-                                        <i class="fas fa-money-bill"></i> Amount (TK)
-                                    </div>
-                                    <div class="input-btn inactive" data-method="unit" onclick="toggleInputMethod('unit')">
-                                        <i class="fas fa-ruler"></i> Cubic Meter (m³)
-                                    </div>
-                                </div>
-                                
-                                <input type="hidden" name="input_type" id="input_type" value="amount">
-                                
-                                <!-- Amount Input Section -->
-                                <div id="amount_section" class="input-section active">
-                                    <div class="mb-3">
-                                        <label><i class="fas fa-money-bill"></i> Amount (<?php echo $currency; ?>)</label>
-                                        <input type="number" name="amount_input" id="amount_input" class="form-control" step="0.01" placeholder="Enter amount in Taka">
-                                        <small class="text-muted">System will calculate cubic meters based on unit price</small>
-                                    </div>
                                     <div class="alert alert-info">
-                                        <strong>Calculated:</strong> <span id="calculated_units">0.00</span> m³ @ <?php echo $currency; ?> <span id="display_unit_price">0.00</span>/m³
-                                    </div>
-                                </div>
-                                
-                                <!-- Unit Input Section -->
-                                <div id="unit_section" class="input-section">
-                                    <div class="mb-3">
-                                        <label><i class="fas fa-ruler"></i> Cubic Meters (m³)</label>
-                                        <input type="number" name="unit_input" id="unit_input" class="form-control" step="0.01" placeholder="Enter cubic meters">
-                                        <small class="text-muted">System will calculate amount based on unit price</small>
-                                    </div>
-                                    <div class="alert alert-info">
-                                        <strong>Calculated:</strong> <?php echo $currency; ?> <span id="calculated_amount">0.00</span>
+                                        <strong>Quantity Dispensed:</strong> <span id="quantity_display">0.00</span> m³
                                     </div>
                                 </div>
                                 
@@ -535,37 +420,33 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                     <div class="cng-card">
                         <div class="cng-card-header cng">
                             <i class="fas fa-oil-can"></i> Available CNG Nozzles
-                            <span class="float-end"><span class="badge pipeline-badge"><i class="fas fa-pipe"></i> Pipeline</span></span>
                         </div>
                         <div class="card-body p-3">
                             <div class="row">
+                                <?php foreach($cng_nozzles as $nozzle): ?>
+                                    <div class="col-6 mb-2">
+                                        <button type="button" class="nozzle-btn quick-nozzle" 
+                                                data-id="<?php echo $nozzle['id']; ?>"
+                                                data-product-id="<?php echo $nozzle['product_id']; ?>"
+                                                data-price="<?php echo $nozzle['unit_price']; ?>"
+                                                data-current-meter="<?php echo $nozzle['closing_meter'] ?? 0; ?>"
+                                                data-nozzle-name="<?php echo $nozzle['nozzle_name']; ?>">
+                                            <i class="fas fa-gas-pump"></i><br>
+                                            <strong><?php echo htmlspecialchars($nozzle['nozzle_name']); ?></strong><br>
+                                            <small><?php echo $nozzle['product_name']; ?></small>
+                                            <span class="d-block mt-1" style="font-size:10px; background:rgba(255,255,255,0.2); padding:2px 6px; border-radius:12px;">
+                                                Meter: <?php echo number_format($nozzle['closing_meter'] ?? 0, 2); ?> m³
+                                            </span>
+                                        </button>
+                                    </div>
+                                <?php endforeach; ?>
                                 <?php if(empty($cng_nozzles)): ?>
                                     <div class="col-12">
                                         <div class="alert alert-info text-center">
-                                            <i class="fas fa-info-circle"></i> No CNG pipeline nozzles configured.<br>
-                                            <small>Please add CNG pipeline nozzles in <strong>Settings → Nozzles & Pipelines</strong>.<br>
-                                            Make sure to check the <strong>"Pipeline Nozzle (CNG)"</strong> option.</small>
+                                            <i class="fas fa-info-circle"></i> No CNG nozzles configured.<br>
+                                            <small>Please add CNG pipeline nozzles in Settings → Nozzles & Pipelines.</small>
                                         </div>
                                     </div>
-                                <?php else: ?>
-                                    <?php foreach($cng_nozzles as $nozzle): ?>
-                                        <div class="col-6 mb-2">
-                                            <button type="button" class="nozzle-btn quick-nozzle" 
-                                                    data-id="<?php echo $nozzle['id']; ?>"
-                                                    data-product-id="<?php echo $nozzle['product_id']; ?>"
-                                                    data-price="<?php echo $nozzle['unit_price']; ?>"
-                                                    data-current-meter="<?php echo $nozzle['closing_meter'] ?? 0; ?>"
-                                                    data-nozzle-name="<?php echo $nozzle['nozzle_name']; ?>">
-                                                <i class="fas fa-gas-pump"></i><br>
-                                                <strong><?php echo htmlspecialchars($nozzle['nozzle_name']); ?></strong><br>
-                                                <small><?php echo $nozzle['product_name']; ?></small>
-                                                <span class="badge pipeline-badge mt-1"><i class="fas fa-pipe"></i> Pipeline</span>
-                                                <span class="d-block mt-1" style="font-size:10px; background:rgba(255,255,255,0.2); padding:2px 6px; border-radius:12px;">
-                                                    Meter: <?php echo number_format($nozzle['closing_meter'] ?? 0, 2); ?> m³
-                                                </span>
-                                            </button>
-                                        </div>
-                                    <?php endforeach; ?>
                                 <?php endif; ?>
                             </div>
                         </div>
@@ -574,86 +455,21 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                     <!-- Quick Info Card -->
                     <div class="cng-card">
                         <div class="cng-card-header" style="background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);">
-                            <i class="fas fa-info-circle"></i> Quick Guide
+                            <i class="fas fa-info-circle"></i> CNG Sales Information
                         </div>
                         <div class="card-body p-3">
                             <div class="alert alert-info">
-                                <strong>Two Ways to Sell:</strong><br>
-                                1. <strong>Amount Based:</strong> Enter TK amount → Auto-calculates m³<br>
-                                2. <strong>Unit Based:</strong> Enter m³ → Auto-calculates amount
+                                <strong>Unit:</strong> Cubic Meters (m³)<br>
+                                <strong>Source:</strong> Government Pipeline (Titas Gas)<br>
+                                <strong>Meter Reading:</strong> Required for each sale
                             </div>
                             <div class="alert alert-warning">
                                 <i class="fas fa-exclamation-triangle"></i>
-                                <strong>Note:</strong> No stock tracking for CNG. Supplied by Titas Gas pipeline.
+                                <strong>Important:</strong> Closing meter must be greater than opening meter.
                             </div>
                             <div class="alert alert-secondary">
-                                <i class="fas fa-credit-card"></i>
-                                <strong>Credit Sales:</strong> Customer name is required for credit sales.
-                            </div>
-                            <div class="alert alert-primary">
                                 <i class="fas fa-pipe"></i>
-                                <strong>Pipeline Nozzles:</strong> These nozzles are directly connected to the government gas pipeline.
-                            </div>
-                        </div>
-                    </div>
-                    
-                    <!-- Today's CNG Sales Summary -->
-                    <div class="cng-card">
-                        <div class="cng-card-header" style="background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);">
-                            <i class="fas fa-chart-line"></i> Today's CNG Summary
-                        </div>
-                        <div class="card-body p-3">
-                            <?php
-                            $today = date('Y-m-d');
-                            $stmt = $pdo->prepare("
-                                SELECT 
-                                    COUNT(*) as total_sales,
-                                    SUM(quantity_liters) as total_units,
-                                    SUM(total_amount) as total_amount,
-                                    SUM(CASE WHEN sale_type = 'cash' THEN total_amount ELSE 0 END) as cash_amount,
-                                    SUM(CASE WHEN sale_type = 'credit' THEN total_amount ELSE 0 END) as credit_amount
-                                FROM gas_sales 
-                                WHERE DATE(sale_date) = ?
-                                AND status = 'completed'
-                            ");
-                            $stmt->execute([$today]);
-                            $today_summary = $stmt->fetch();
-                            
-                            if(!$today_summary) {
-                                $today_summary = [
-                                    'total_sales' => 0,
-                                    'total_units' => 0,
-                                    'total_amount' => 0,
-                                    'cash_amount' => 0,
-                                    'credit_amount' => 0
-                                ];
-                            }
-                            ?>
-                            <div class="row text-center">
-                                <div class="col-6 border-end">
-                                    <h4><?php echo number_format($today_summary['total_units'] ?? 0, 2); ?> m³</h4>
-                                    <small class="text-muted">Total CNG Sold</small>
-                                </div>
-                                <div class="col-6">
-                                    <h4 class="text-success"><?php echo $currency; ?> <?php echo number_format($today_summary['total_amount'] ?? 0, 2); ?></h4>
-                                    <small class="text-muted">Total Revenue</small>
-                                </div>
-                            </div>
-                            <hr>
-                            <div class="row text-center">
-                                <div class="col-6 border-end">
-                                    <span class="badge cash-badge">Cash</span>
-                                    <h6><?php echo $currency; ?> <?php echo number_format($today_summary['cash_amount'] ?? 0, 2); ?></h6>
-                                </div>
-                                <div class="col-6">
-                                    <span class="badge credit-badge">Credit</span>
-                                    <h6><?php echo $currency; ?> <?php echo number_format($today_summary['credit_amount'] ?? 0, 2); ?></h6>
-                                </div>
-                            </div>
-                            <div class="mt-2 text-center">
-                                <small class="text-muted">
-                                    <i class="fas fa-shopping-cart"></i> <?php echo $today_summary['total_sales'] ?? 0; ?> transactions today
-                                </small>
+                                <strong>Pipeline Nozzle:</strong> No tank stock tracking. Sales are based on meter readings only.
                             </div>
                         </div>
                     </div>
@@ -665,38 +481,14 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
     <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
     <script>
-        // Toggle input method
-        function toggleInputMethod(method) {
-            document.getElementById('input_type').value = method;
-            
-            document.querySelectorAll('.input-btn').forEach(btn => {
-                btn.classList.remove('active');
-                btn.classList.add('inactive');
-            });
-            document.querySelector(`.input-btn[data-method="${method}"]`).classList.add('active');
-            document.querySelector(`.input-btn[data-method="${method}"]`).classList.remove('inactive');
-            
-            if(method === 'amount') {
-                document.getElementById('amount_section').classList.add('active');
-                document.getElementById('unit_section').classList.remove('active');
-            } else {
-                document.getElementById('amount_section').classList.remove('active');
-                document.getElementById('unit_section').classList.add('active');
-            }
-            
-            calculateTotal();
-        }
-
         // Nozzle selection
         document.getElementById('nozzle_id').addEventListener('change', function() {
             let option = this.options[this.selectedIndex];
             if(!option.value) return;
             
             document.getElementById('product_id').value = option.getAttribute('data-product-id');
+            document.getElementById('unit_price').value = option.getAttribute('data-price');
             document.getElementById('nozzle_name').value = option.getAttribute('data-nozzle-name') || option.text;
-            let price = parseFloat(option.getAttribute('data-price')) || 0;
-            document.getElementById('unit_price').value = price.toFixed(2);
-            document.getElementById('display_unit_price').innerText = price.toFixed(2);
             
             let currentMeter = parseFloat(option.getAttribute('data-current-meter')) || 0;
             document.getElementById('opening_meter').value = currentMeter.toFixed(2);
@@ -710,10 +502,8 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
             btn.addEventListener('click', function() {
                 document.getElementById('nozzle_id').value = this.getAttribute('data-id');
                 document.getElementById('product_id').value = this.getAttribute('data-product-id');
+                document.getElementById('unit_price').value = this.getAttribute('data-price');
                 document.getElementById('nozzle_name').value = this.getAttribute('data-nozzle-name') || this.textContent.trim();
-                let price = parseFloat(this.getAttribute('data-price')) || 0;
-                document.getElementById('unit_price').value = price.toFixed(2);
-                document.getElementById('display_unit_price').innerText = price.toFixed(2);
                 
                 let currentMeter = parseFloat(this.getAttribute('data-current-meter')) || 0;
                 document.getElementById('opening_meter').value = currentMeter.toFixed(2);
@@ -721,37 +511,15 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                 
                 document.querySelectorAll('.quick-nozzle').forEach(b => b.classList.remove('active'));
                 this.classList.add('active');
-                calculateTotal();
                 document.getElementById('closing_meter').focus();
+                calculateTotal();
             });
         });
 
-        // Amount input
-        document.getElementById('amount_input').addEventListener('input', function() {
-            calculateTotal();
-        });
-
-        // Unit input
-        document.getElementById('unit_input').addEventListener('input', function() {
-            calculateTotal();
-        });
-
-        // Closing meter manual entry
+        // Closing meter input
         document.getElementById('closing_meter').addEventListener('input', function() {
-            let opening = parseFloat(document.getElementById('opening_meter').value) || 0;
-            let closing = parseFloat(this.value) || 0;
-            let quantity = closing - opening;
-            if(quantity > 0) {
-                let price = parseFloat(document.getElementById('unit_price').value) || 0;
-                let total = quantity * price;
-                document.getElementById('quantity').value = quantity.toFixed(2);
-                document.getElementById('total_amount_display').value = total.toFixed(2);
-                document.getElementById('total_amount').innerText = total.toFixed(2);
-                calculateChange();
-            }
+            calculateTotal();
         });
-
-        // Received amount
         document.getElementById('received').addEventListener('input', calculateChange);
 
         // Sale type change
@@ -760,44 +528,25 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                 document.getElementById('customer_fields').style.display = 'block';
                 document.getElementById('cash_fields').style.display = 'none';
                 document.getElementById('customer_name').setAttribute('required', 'required');
-                document.getElementById('received').value = 0;
             } else {
                 document.getElementById('customer_fields').style.display = 'none';
                 document.getElementById('cash_fields').style.display = 'block';
                 document.getElementById('customer_name').removeAttribute('required');
                 document.getElementById('received').value = 0;
+                calculateChange();
             }
-            calculateChange();
         });
 
         function calculateTotal() {
+            let opening = parseFloat(document.getElementById('opening_meter').value) || 0;
+            let closing = parseFloat(document.getElementById('closing_meter').value) || 0;
+            let quantity = closing - opening;
+            if(quantity < 0) quantity = 0;
+            
             let price = parseFloat(document.getElementById('unit_price').value) || 0;
-            let method = document.getElementById('input_type').value;
-            let quantity = 0;
-            let total = 0;
-            let closingMeter = parseFloat(document.getElementById('opening_meter').value) || 0;
+            let total = quantity * price;
             
-            if(method === 'amount') {
-                let amount = parseFloat(document.getElementById('amount_input').value) || 0;
-                if(price > 0 && amount > 0) {
-                    quantity = amount / price;
-                    total = amount;
-                }
-                document.getElementById('calculated_units').innerText = quantity.toFixed(2);
-            } else {
-                quantity = parseFloat(document.getElementById('unit_input').value) || 0;
-                if(price > 0 && quantity > 0) {
-                    total = quantity * price;
-                }
-                document.getElementById('calculated_amount').innerText = total.toFixed(2);
-            }
-            
-            // Set closing meter
-            if(quantity > 0) {
-                closingMeter = parseFloat(document.getElementById('opening_meter').value) || 0;
-                document.getElementById('closing_meter').value = (closingMeter + quantity).toFixed(2);
-            }
-            
+            document.getElementById('quantity_display').innerText = quantity.toFixed(2);
             document.getElementById('total_amount_display').value = total.toFixed(2);
             document.getElementById('total_amount').innerText = total.toFixed(2);
             calculateChange();
@@ -813,34 +562,25 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
         // Form validation
         document.getElementById('cngSaleForm').addEventListener('submit', function(e) {
             let nozzle = document.getElementById('nozzle_id').value;
-            let method = document.getElementById('input_type').value;
-            let amount = parseFloat(document.getElementById('amount_input').value) || 0;
-            let units = parseFloat(document.getElementById('unit_input').value) || 0;
+            let opening = parseFloat(document.getElementById('opening_meter').value) || 0;
+            let closing = parseFloat(document.getElementById('closing_meter').value) || 0;
+            let quantity = closing - opening;
             
             if(!nozzle) {
                 e.preventDefault();
-                alert('❌ Please select a CNG nozzle');
+                alert('Please select a CNG nozzle');
                 return false;
             }
-            
-            if(method === 'amount' && amount <= 0) {
-                e.preventDefault();
-                alert('❌ Please enter the amount in Taka');
-                return false;
-            }
-            
-            if(method === 'unit' && units <= 0) {
-                e.preventDefault();
-                alert('❌ Please enter the cubic meters');
-                return false;
-            }
-            
-            let opening = parseFloat(document.getElementById('opening_meter').value) || 0;
-            let closing = parseFloat(document.getElementById('closing_meter').value) || 0;
             
             if(closing <= opening) {
                 e.preventDefault();
                 alert('❌ Closing meter must be greater than opening meter!');
+                return false;
+            }
+            
+            if(quantity <= 0) {
+                e.preventDefault();
+                alert('❌ Invalid quantity! Please check meter readings.');
                 return false;
             }
             
@@ -854,13 +594,11 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                 }
             }
             
-            // Confirm the sale
+            // Confirm sale
             let total = parseFloat(document.getElementById('total_amount').innerText) || 0;
-            let quantity = method === 'amount' ? parseFloat(document.getElementById('calculated_units').innerText) : units;
-            
             let confirmMsg = `⚠️ CONFIRM CNG SALE ⚠️\n\n`;
             confirmMsg += `📊 Quantity: ${quantity.toFixed(2)} m³\n`;
-            confirmMsg += `💰 Amount: BDT ${total.toFixed(2)}\n`;
+            confirmMsg += `💰 Total: ${document.getElementById('total_amount_display').value} BDT\n`;
             confirmMsg += `📌 Type: ${document.querySelector('#sale_type option:checked').text}\n`;
             if(saleType == 'credit') {
                 confirmMsg += `👤 Customer: ${document.getElementById('customer_name').value.trim()}\n`;

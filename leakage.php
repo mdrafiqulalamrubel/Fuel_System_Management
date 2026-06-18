@@ -7,10 +7,14 @@ $error = '';
 $success = '';
 $active_tab = $_GET['tab'] ?? 'adjustment';
 
-// Get tanks with calibration factors
-$tanks = $pdo->query("SELECT t.*, p.product_name, p.purchase_rate 
-                      FROM tanks t 
-                      JOIN fuel_products p ON t.product_id = p.id")->fetchAll();
+// Get tanks with calibration factors - EXCLUDE CNG (Pipeline)
+$tanks = $pdo->query("
+    SELECT t.*, p.product_name, p.purchase_rate 
+    FROM tanks t 
+    JOIN fuel_products p ON t.product_id = p.id 
+    WHERE p.product_name NOT IN ('CNG', 'Natural Gas')
+    AND t.is_active = 1
+")->fetchAll();
 
 // Get the CORRECT account IDs from chart_of_accounts
 $stmt = $pdo->prepare("SELECT id FROM chart_of_accounts WHERE account_code = '5100'");
@@ -89,11 +93,11 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['submit_adjustment'])) {
             $stmt->execute([$tank_id, $system_stock, $physical_stock, $variance, $dip_reading, $reason, $adjustment_type, $loss_amount, $user['id']]);
             $adjustment_id = $pdo->lastInsertId();
             
-            // FIXED: Update tank stock to the physical stock value
+            // Update tank stock to the physical stock value
             $stmt = $pdo->prepare("UPDATE tanks SET current_stock_liters = ? WHERE id = ?");
             $stmt->execute([$physical_stock, $tank_id]);
             
-            // FIXED: Stock ledger entry - use the NEW stock as balance
+            // Stock ledger entry - use the NEW stock as balance
             $quantity = abs($variance);
             $stmt = $pdo->prepare("INSERT INTO stock_ledger (product_id, tank_id, transaction_type, reference_no, out_quantity, in_quantity, balance_quantity, unit_cost) VALUES (?, ?, 'adjustment', ?, ?, ?, ?, ?)");
             
@@ -150,13 +154,14 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['submit_adjustment'])) {
     }
 }
 
-// Get recent adjustments history
+// Get recent adjustments history - EXCLUDE CNG
 $recent = $pdo->query("
     SELECT l.*, t.tank_name, p.product_name 
     FROM leakage_adjustments l 
     JOIN tanks t ON l.tank_id = t.id 
     JOIN fuel_products p ON t.product_id = p.id 
     WHERE l.status = 'approved' 
+    AND p.product_name NOT IN ('CNG', 'Natural Gas')
     ORDER BY l.adjustment_date DESC 
     LIMIT 50
 ")->fetchAll();
@@ -261,6 +266,14 @@ foreach($recent as $r) {
             color: #dc3545;
             font-size: 12px;
         }
+        .pipeline-note {
+            background: #cce5ff;
+            border-left: 4px solid #0d6efd;
+            padding: 10px 15px;
+            border-radius: 8px;
+            margin-bottom: 15px;
+        }
+        .pipeline-note i { color: #0d6efd; }
     </style>
 </head>
 <body>
@@ -270,9 +283,22 @@ foreach($recent as $r) {
         <div class="container-fluid">
             <div class="d-flex justify-content-between align-items-center mb-4">
                 <h2><i class="fas fa-tint"></i> Leakage & Wastage Management</h2>
-                <a href="dashboard.php" class="btn btn-secondary">
-                    <i class="fas fa-arrow-left"></i> Back to Dashboard
-                </a>
+                <div>
+                    <a href="leakage_report.php" class="btn btn-info">
+                        <i class="fas fa-file-alt"></i> View Report
+                    </a>
+                    <a href="dashboard.php" class="btn btn-secondary">
+                        <i class="fas fa-arrow-left"></i> Back to Dashboard
+                    </a>
+                </div>
+            </div>
+            
+            <!-- Pipeline Note -->
+            <div class="pipeline-note">
+                <i class="fas fa-info-circle"></i>
+                <strong>Note:</strong> CNG is supplied through government pipeline and does not have physical tank storage. 
+                Therefore, CNG is excluded from the leakage & wastage tracking system. 
+                <span class="badge bg-primary">Liquid Fuels Only</span>
             </div>
             
             <?php if($error): ?>
@@ -325,30 +351,11 @@ foreach($recent as $r) {
                     <div class="card">
                         <div class="card-header bg-warning">
                             <h5><i class="fas fa-clipboard-list"></i> Physical Stock Verification</h5>
+                            <small class="text-muted">Liquid Fuels Only (Diesel, Petrol, Octane, LPG)</small>
                         </div>
                         <div class="card-body">
-                            <!-- Dip Stick Formula Box -->
-                            <div class="formula-box">
-                                <h6><i class="fas fa-calculator"></i> Dip Stick Calculation Formula</h6>
-                                <div class="formula">
-                                    <strong>Volume (Liters) = Dip Reading (cm) × Calibration Factor (L/cm)</strong>
-                                </div>
-                                <small>Example: 50 cm × 5.2345 L/cm = 261.73 Liters</small>
-                            </div>
-                            
-                            <!-- Accounting Treatment Box -->
-                            <div class="accounting-box">
-                                <h6><i class="fas fa-book"></i> Correct Accounting Treatment</h6>
-                                <div class="formula" style="background:#fff; text-align:left;">
-                                    <strong>For Loss (System Stock > Physical Stock):</strong><br>
-                                    Dr. Stock Loss Expense (Account 5100)    xxx<br>
-                                    &nbsp;&nbsp;&nbsp;&nbsp;Cr. Fuel Inventory (Account 1200)    xxx<br><br>
-                                    <strong>For Gain (System Stock < Physical Stock):</strong><br>
-                                    Dr. Fuel Inventory (Account 1200)    xxx<br>
-                                    &nbsp;&nbsp;&nbsp;&nbsp;Cr. Stock Loss Expense (Account 5100)    xxx
-                                </div>
-                                <small>Amount = |Variance| (Liters) × Purchase Rate (<?php echo $currency; ?>/L)</small>
-                            </div>
+                           
+                       
                             
                             <form method="POST" id="adjustmentForm">
                                 <div class="mb-3">
@@ -483,6 +490,30 @@ foreach($recent as $r) {
                                     <i class="fas fa-save"></i> Submit Adjustment
                                 </button>
                             </form>
+
+                             <!-- Dip Stick Formula Box -->
+                            <div class="formula-box">
+                                <h6><i class="fas fa-calculator"></i> Dip Stick Calculation Formula</h6>
+                                <div class="formula">
+                                    <strong>Volume (Liters) = Dip Reading (cm) × Calibration Factor (L/cm)</strong>
+                                </div>
+                                <small>Example: 50 cm × 5.2345 L/cm = 261.73 Liters</small>
+                            </div>
+                            
+                            <!-- Accounting Treatment Box -->
+                            <div class="accounting-box">
+                                <h6><i class="fas fa-book"></i> Correct Accounting Treatment</h6>
+                                <div class="formula" style="background:#fff; text-align:left;">
+                                    <strong>For Loss (System Stock > Physical Stock):</strong><br>
+                                    Dr. Stock Loss Expense (Account 5100)    xxx<br>
+                                    &nbsp;&nbsp;&nbsp;&nbsp;Cr. Fuel Inventory (Account 1200)    xxx<br><br>
+                                    <strong>For Gain (System Stock < Physical Stock):</strong><br>
+                                    Dr. Fuel Inventory (Account 1200)    xxx<br>
+                                    &nbsp;&nbsp;&nbsp;&nbsp;Cr. Stock Loss Expense (Account 5100)    xxx
+                                </div>
+                                <small>Amount = |Variance| (Liters) × Purchase Rate (<?php echo $currency; ?>/L)</small>
+                            </div>
+                            
                         </div>
                     </div>
                 </div>
@@ -491,6 +522,7 @@ foreach($recent as $r) {
                     <div class="card">
                         <div class="card-header bg-info text-white">
                             <h5><i class="fas fa-history"></i> Recent Adjustments History</h5>
+                            <small class="text-white-50">Liquid Fuels Only</small>
                         </div>
                         <div class="card-body">
                             <div class="table-responsive">
@@ -511,24 +543,24 @@ foreach($recent as $r) {
                                         <tr>
                                             <td><?php echo date('d/m/Y', strtotime($item['adjustment_date'])); ?></td>
                                             <td><?php echo $item['tank_name']; ?><br><small><?php echo $item['product_name']; ?></small></td>
-                                            <td class="text-end"><?php echo number_format($item['system_stock'], 2); ?> L</div>
-                                            <td class="text-end"><?php echo number_format($item['physical_stock'], 2); ?> L</div>
+                                            <td class="text-end"><?php echo number_format($item['system_stock'], 2); ?> L</td>
+                                            <td class="text-end"><?php echo number_format($item['physical_stock'], 2); ?> L</td>
                                             <td class="text-end <?php echo $item['variance'] > 0 ? 'text-danger' : 'text-success'; ?> fw-bold">
                                                 <?php echo ($item['variance'] > 0 ? '-' : '+') . number_format(abs($item['variance']), 2); ?> L
-                                            </div>
+                                            </td>
                                             <td class="text-end <?php echo $item['variance'] > 0 ? 'text-danger' : 'text-success'; ?>">
                                                 <?php echo $currency; ?> <?php echo number_format($item['loss_amount'], 2); ?>
-                                            </div>
-                                            <td><span class="badge bg-secondary"><?php echo ucfirst($item['adjustment_type']); ?></span></div>
-                                         </tr
+                                            </td>
+                                            <td><span class="badge bg-secondary"><?php echo ucfirst($item['adjustment_type']); ?></span></td>
+                                        </tr>
                                         <?php endforeach; ?>
                                         <?php if(empty($recent)): ?>
-                                         <tr
-                                            <td colspan="7" class="text-center text-muted">No adjustments found</div>
-                                         </tr
+                                        <tr>
+                                            <td colspan="7" class="text-center text-muted">No adjustments found</td>
+                                        </tr>
                                         <?php endif; ?>
                                     </tbody>
-                                </div>
+                                </table>
                             </div>
                         </div>
                     </div>
@@ -540,7 +572,7 @@ foreach($recent as $r) {
                         </div>
                         <div class="card-body">
                             <table class="table table-sm">
-                                 <tr
+                                <tr>
                                     <td><strong>Stock Loss Expense (5100):</strong></td>
                                     <td>
                                         <?php 
@@ -549,9 +581,9 @@ foreach($recent as $r) {
                                         $a = $stmt->fetch();
                                         echo $a ? "<span class='text-primary'>{$a['account_code']}</span> - {$a['account_name']}" : '<span class="text-danger">Not configured</span>';
                                         ?>
-                                     </div>
-                                 </tr
-                                 <tr
+                                    </td>
+                                </tr>
+                                <tr>
                                     <td><strong>Fuel Inventory (1200):</strong></td>
                                     <td>
                                         <?php 
@@ -560,12 +592,16 @@ foreach($recent as $r) {
                                         $a = $stmt->fetch();
                                         echo $a ? "<span class='text-success'>{$a['account_code']}</span> - {$a['account_name']}" : '<span class="text-danger">Not configured</span>';
                                         ?>
-                                     </div>
-                                 </tr
-                             </div>
+                                    </td>
+                                </tr>
+                            </table>
                             <div class="alert alert-info mt-2 mb-0">
                                 <i class="fas fa-info-circle"></i> 
                                 <strong>Note:</strong> Losses are debited to Stock Loss Expense. Gains are credited back to the same account.
+                            </div>
+                            <div class="alert alert-secondary mt-2 mb-0">
+                                <i class="fas fa-pipe"></i>
+                                <strong>CNG Excluded:</strong> CNG is a pipeline gas. Leakage tracking does not apply.
                             </div>
                         </div>
                     </div>

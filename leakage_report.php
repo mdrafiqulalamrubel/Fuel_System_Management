@@ -11,8 +11,10 @@ $sql = "SELECT l.*, t.tank_name, p.product_name, u.full_name as approved_by_name
         JOIN tanks t ON l.tank_id = t.id 
         JOIN fuel_products p ON t.product_id = p.id 
         LEFT JOIN users u ON l.approved_by = u.id 
-        WHERE l.adjustment_date BETWEEN ? AND ?";
+        WHERE l.adjustment_date BETWEEN ? AND ? 
+        AND p.product_name NOT IN ('CNG', 'Natural Gas')";
 $params = [$from_date, $to_date];
+
 if($tank_id) {
     $sql .= " AND l.tank_id = ?";
     $params[] = $tank_id;
@@ -22,11 +24,32 @@ $stmt = $pdo->prepare($sql);
 $stmt->execute($params);
 $leakages = $stmt->fetchAll();
 
-$stmt = $pdo->prepare("SELECT SUM(variance) as total_loss_liters, SUM(loss_amount) as total_loss_amount, COUNT(*) as total_incidents FROM leakage_adjustments WHERE adjustment_date BETWEEN ? AND ? AND status='approved'");
+// Summary - EXCLUDE CNG
+$stmt = $pdo->prepare("
+    SELECT SUM(l.variance) as total_loss_liters, 
+           SUM(l.loss_amount) as total_loss_amount, 
+           COUNT(*) as total_incidents 
+    FROM leakage_adjustments l
+    JOIN tanks t ON l.tank_id = t.id
+    JOIN fuel_products p ON t.product_id = p.id
+    WHERE l.adjustment_date BETWEEN ? AND ? 
+    AND l.status='approved'
+    AND p.product_name NOT IN ('CNG', 'Natural Gas')
+");
 $stmt->execute([$from_date, $to_date]);
 $summary = $stmt->fetch();
 
-$tanks = $pdo->query("SELECT * FROM tanks WHERE is_active = 1")->fetchAll();
+// Get tanks - EXCLUDE CNG
+$tanks = $pdo->query("
+    SELECT * FROM tanks 
+    WHERE is_active = 1 
+    AND id NOT IN (
+        SELECT t.id FROM tanks t 
+        JOIN fuel_products p ON t.product_id = p.id 
+        WHERE p.product_name IN ('CNG', 'Natural Gas')
+    )
+")->fetchAll();
+
 $settings = $pdo->query("SELECT setting_key, setting_value FROM system_settings")->fetchAll(PDO::FETCH_KEY_PAIR);
 $currency = $settings['currency_symbol'] ?? 'BDT';
 ?>
@@ -74,6 +97,14 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
         .text-center {
             text-align: center;
         }
+        .pipeline-note {
+            background: #cce5ff;
+            border-left: 4px solid #0d6efd;
+            padding: 10px 15px;
+            border-radius: 8px;
+            margin-bottom: 15px;
+        }
+        .pipeline-note i { color: #0d6efd; }
         @media print {
             .sidebar, .no-print, .stats-card, .card-header .btn, 
             .dataTables_length, .dataTables_filter, .dataTables_paginate,
@@ -118,10 +149,20 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                     <button onclick="window.print()" class="btn btn-primary">
                         <i class="fas fa-print"></i> Print Report
                     </button>
+                    <a href="leakage.php" class="btn btn-warning">
+                        <i class="fas fa-arrow-left"></i> Back to Leakage Management
+                    </a>
                     <a href="reports.php" class="btn btn-secondary">
-                        <i class="fas fa-arrow-left"></i> Back
+                        <i class="fas fa-arrow-left"></i> Back to Reports
                     </a>
                 </div>
+            </div>
+            
+            <!-- Pipeline Note -->
+            <div class="pipeline-note no-print">
+                <i class="fas fa-info-circle"></i>
+                <strong>Note:</strong> CNG is supplied through government pipeline and is excluded from the leakage & wastage report.
+                <span class="badge bg-primary">Liquid Fuels Only</span>
             </div>
             
             <!-- Date Range Filter -->
@@ -189,6 +230,7 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
             <div class="card">
                 <div class="card-header bg-danger text-white">
                     <h5><i class="fas fa-list"></i> Incident Details</h5>
+                    <small class="text-white-50">Liquid Fuels Only</small>
                 </div>
                 <div class="card-body">
                     <div class="table-responsive">
@@ -241,11 +283,17 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                                     <td class="text-end text-danger"><?php echo number_format($summary['total_loss_liters'] ?? 0, 2); ?> L</td>
                                     <td colspan="2" class="text-end"><?php echo $currency; ?> <?php echo number_format($summary['total_loss_amount'] ?? 0, 2); ?></td>
                                     <td></td>
-                                </table>
+                                </tr>
                             </tfoot>
                         </table>
                     </div>
                 </div>
+            </div>
+            
+            <!-- Footer Note -->
+            <div class="alert alert-secondary mt-3 no-print">
+                <i class="fas fa-pipe"></i>
+                <strong>CNG Excluded:</strong> CNG is a pipeline gas supplied by Titas Gas. Leakage tracking does not apply to pipeline gas.
             </div>
         </div>
     </div>
