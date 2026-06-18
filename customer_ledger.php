@@ -20,13 +20,16 @@ if($customer_id) {
     if($customer) {
         // Get opening balance (transactions before from_date)
         $stmt = $pdo->prepare("
-            SELECT COALESCE(SUM(total_amount), 0) as total_sales, COALESCE(SUM(paid_amount), 0) as total_payments 
+            SELECT 
+                COALESCE(SUM(total_amount), 0) as total_sales, 
+                COALESCE(SUM(paid_amount), 0) as total_payments,
+                COALESCE(SUM(advance_adjusted), 0) as total_advance_used
             FROM credit_sales 
             WHERE customer_id = ? AND sale_date < ?
         ");
         $stmt->execute([$customer_id, $from_date]);
         $opening = $stmt->fetch();
-        $opening_balance = ($opening['total_sales'] ?? 0) - ($opening['total_payments'] ?? 0);
+        $opening_balance = ($opening['total_sales'] ?? 0) - ($opening['total_payments'] ?? 0) - ($opening['total_advance_used'] ?? 0);
         
         // Get sales transactions
         $stmt = $pdo->prepare("
@@ -40,6 +43,7 @@ if($customer_id) {
                 NULL as receipt_no,
                 total_amount as debit,
                 0 as credit,
+                advance_adjusted,
                 id as sale_id
             FROM credit_sales 
             WHERE customer_id = ? AND sale_date BETWEEN ? AND ?
@@ -59,7 +63,8 @@ if($customer_id) {
                 cp.receipt_no,
                 0 as debit,
                 cp.amount as credit,
-                cp.id as payment_id
+                cp.id as payment_id,
+                'Payment' as description
             FROM credit_payments cp
             JOIN credit_sales cs ON cp.credit_sale_id = cs.id
             WHERE cs.customer_id = ? AND cp.payment_date BETWEEN ? AND ?
@@ -67,8 +72,70 @@ if($customer_id) {
         $stmt->execute([$customer_id, $from_date, $to_date]);
         $payments = $stmt->fetchAll();
         
-        // Merge and sort transactions
-        $transactions = array_merge($sales, $payments);
+        // Get advance payments (received from customer)
+        $stmt = $pdo->prepare("
+            SELECT 
+                advance_date as trans_date,
+                CONCAT('ADV-', id) as ref_no,
+                amount as amount,
+                NULL as due_date,
+                'advance_received' as trans_type,
+                payment_method,
+                reference_no as receipt_no,
+                0 as debit,
+                amount as credit,
+                id as advance_id,
+                'Advance Received' as description
+            FROM advance_payments_customer 
+            WHERE customer_id = ? AND advance_date BETWEEN ? AND ?
+            AND status = 'active'
+        ");
+        $stmt->execute([$customer_id, $from_date, $to_date]);
+        $advances = $stmt->fetchAll();
+        
+        // Get advance used (when advance was applied to sales)
+        $stmt = $pdo->prepare("
+            SELECT 
+                cs.sale_date as trans_date,
+                cs.invoice_no as ref_no,
+                cs.advance_adjusted as amount,
+                NULL as due_date,
+                'advance_used' as trans_type,
+                NULL as payment_method,
+                NULL as receipt_no,
+                cs.advance_adjusted as debit,
+                0 as credit,
+                cs.id as sale_id,
+                'Advance Used' as description
+            FROM credit_sales cs
+            WHERE cs.customer_id = ? AND cs.advance_adjusted > 0
+            AND cs.sale_date BETWEEN ? AND ?
+        ");
+        $stmt->execute([$customer_id, $from_date, $to_date]);
+        $advance_used = $stmt->fetchAll();
+        
+        // Get advance payments (for history in ledger)
+        $stmt = $pdo->prepare("
+            SELECT 
+                advance_date as trans_date,
+                CONCAT('ADV-', id) as ref_no,
+                amount as amount,
+                NULL as due_date,
+                'advance_received' as trans_type,
+                payment_method,
+                reference_no as receipt_no,
+                0 as debit,
+                amount as credit,
+                id as advance_id,
+                'Advance Received' as description
+            FROM advance_payments_customer 
+            WHERE customer_id = ? AND advance_date BETWEEN ? AND ?
+        ");
+        $stmt->execute([$customer_id, $from_date, $to_date]);
+        $advance_received = $stmt->fetchAll();
+        
+        // Merge all transactions
+        $transactions = array_merge($sales, $payments, $advance_received, $advance_used);
         usort($transactions, function($a, $b) {
             return strtotime($a['trans_date']) - strtotime($b['trans_date']);
         });
@@ -111,6 +178,8 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
         }
         .stats-card:hover { transform: translateY(-5px); }
         .stats-card i { font-size: 40px; opacity: 0.5; float: right; }
+        .badge-advance-received { background: #17a2b8; color: white; }
+        .badge-advance-used { background: #28a745; color: white; }
         
         @media print {
             .sidebar, .no-print, .btn { display: none !important; }
@@ -208,6 +277,26 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                     </div>
                 </div>
                 
+                <!-- Advance Balance Card -->
+                <div class="row mb-4">
+                    <div class="col-md-6">
+                        <div class="card text-white bg-info">
+                            <div class="card-body">
+                                <h6>Advance Balance</h6>
+                                <h4><?php echo $currency; ?> <?php echo number_format($customer['advance_balance'], 2); ?></h4>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-6">
+                        <div class="card text-white bg-success">
+                            <div class="card-body">
+                                <h6>Available Credit</h6>
+                                <h4><?php echo $currency; ?> <?php echo number_format($customer['credit_limit'] - $customer['current_balance'], 2); ?></h4>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
                 <!-- Contact Info -->
                 <div class="row mb-4">
                     <div class="col-md-6">
@@ -286,7 +375,14 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                                             if($t['trans_type'] == 'sale') {
                                                 $running_balance += $t['amount'];
                                                 $total_debit += $t['amount'];
-                                            } else {
+                                            } elseif($t['trans_type'] == 'advance_used') {
+                                                $running_balance -= $t['amount'];
+                                                $total_credit += $t['amount'];
+                                            } elseif($t['trans_type'] == 'payment') {
+                                                $running_balance -= $t['amount'];
+                                                $total_credit += $t['amount'];
+                                            } elseif($t['trans_type'] == 'advance_received') {
+                                                // Advance received is a credit (liability) - reduces balance
                                                 $running_balance -= $t['amount'];
                                                 $total_credit += $t['amount'];
                                             }
@@ -295,29 +391,32 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                                             onclick="window.open('view_invoice.php?invoice=<?php echo $t['ref_no']; ?>', '_blank')"
                                             title="Click to view details for <?php echo $t['ref_no']; ?>">
                                             <td><?php echo date('d-m-Y', strtotime($t['trans_date'])); ?></td>
-                                            <td>
-                                                <?php if($t['trans_type'] == 'sale'): ?>
-                                                    <?php echo $t['ref_no']; ?>
-                                                <?php else: ?>
-                                                    <?php echo $t['ref_no']; ?>
-                                                <?php endif; ?>
-                                            </td>
+                                            <td><?php echo $t['ref_no']; ?></td>
                                             <td>
                                                 <?php if($t['trans_type'] == 'sale'): ?>
                                                     <span class="text-primary">Fuel Purchase (Credit)</span>
                                                     <?php if(isset($t['due_date']) && $t['due_date']): ?>
                                                         <br><small class="text-muted">Due: <?php echo date('d-m-Y', strtotime($t['due_date'])); ?></small>
                                                     <?php endif; ?>
+                                                    <?php if(isset($t['advance_adjusted']) && $t['advance_adjusted'] > 0): ?>
+                                                        <br><small class="text-success">Advance Used: <?php echo $currency; ?> <?php echo number_format($t['advance_adjusted'], 2); ?></small>
+                                                    <?php endif; ?>
+                                                <?php elseif($t['trans_type'] == 'advance_received'): ?>
+                                                    <span class="badge badge-advance-received"><i class="fas fa-hand-holding-usd"></i> Advance Received</span>
+                                                    <br><small class="text-muted">Method: <?php echo ucfirst($t['payment_method']); ?></small>
+                                                <?php elseif($t['trans_type'] == 'advance_used'): ?>
+                                                    <span class="badge badge-advance-used"><i class="fas fa-check-circle"></i> Advance Used</span>
+                                                    <br><small class="text-muted">Applied to invoice: <?php echo $t['ref_no']; ?></small>
                                                 <?php else: ?>
                                                     <span class="text-success">Payment Received</span>
                                                     <br><small class="text-muted">Method: <?php echo ucfirst($t['payment_method']); ?></small>
                                                 <?php endif; ?>
                                             </td>
-                                            <td class="text-end text-danger fw-bold">
-                                                <?php echo $t['trans_type'] == 'sale' ? number_format($t['amount'], 2) : '-'; ?>
+                                            <td class="text-end <?php echo ($t['trans_type'] == 'sale' || $t['trans_type'] == 'advance_used') ? 'text-danger fw-bold' : ''; ?>">
+                                                <?php echo ($t['trans_type'] == 'sale' || $t['trans_type'] == 'advance_used') ? number_format($t['amount'], 2) : '-'; ?>
                                             </td>
-                                            <td class="text-end text-success fw-bold">
-                                                <?php echo $t['trans_type'] == 'payment' ? number_format($t['amount'], 2) : '-'; ?>
+                                            <td class="text-end <?php echo ($t['trans_type'] == 'payment' || $t['trans_type'] == 'advance_received') ? 'text-success fw-bold' : ''; ?>">
+                                                <?php echo ($t['trans_type'] == 'payment' || $t['trans_type'] == 'advance_received') ? number_format($t['amount'], 2) : '-'; ?>
                                             </td>
                                             <td class="text-end fw-bold">
                                                 <?php echo number_format(abs($running_balance), 2); ?> 
@@ -352,19 +451,25 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                     </div>
                     <div class="card-body">
                         <div class="row">
-                            <div class="col-md-4">
+                            <div class="col-md-3">
                                 <div class="alert alert-info">
-                                    <strong>Total Sales (This Period)</strong><br>
+                                    <strong>Total Sales</strong><br>
                                     <span class="h4"><?php echo $currency; ?> <?php echo number_format($total_debit, 2); ?></span>
                                 </div>
                             </div>
-                            <div class="col-md-4">
+                            <div class="col-md-3">
                                 <div class="alert alert-success">
-                                    <strong>Total Payments (This Period)</strong><br>
+                                    <strong>Total Payments</strong><br>
                                     <span class="h4"><?php echo $currency; ?> <?php echo number_format($total_credit, 2); ?></span>
                                 </div>
                             </div>
-                            <div class="col-md-4">
+                            <div class="col-md-3">
+                                <div class="alert alert-warning">
+                                    <strong>Advance Balance</strong><br>
+                                    <span class="h4"><?php echo $currency; ?> <?php echo number_format($customer['advance_balance'], 2); ?></span>
+                                </div>
+                            </div>
+                            <div class="col-md-3">
                                 <div class="alert alert-danger">
                                     <strong>Outstanding Balance</strong><br>
                                     <span class="h4"><?php echo $currency; ?> <?php echo number_format($customer['current_balance'], 2); ?></span>

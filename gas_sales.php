@@ -76,10 +76,79 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['make_cng_sale'])) {
         $quantity = $closing_meter - $opening_meter;
         $total_amount = $quantity * $unit_price;
     }
-    
+
     $received = isset($_POST['received']) ? floatval($_POST['received']) : $total_amount;
     $change = $received - $total_amount;
-    
+
+    // =============================================
+    // CHECK FOR CUSTOMER ADVANCE BALANCE (CNG)
+    // =============================================
+
+    $advance_used = 0;
+    $advance_payment_id = null;
+
+    if($sale_type == 'credit' && !empty($customer_name)) {
+        // Get or create customer ID if not set
+        if(empty($customer_id)) {
+            if(!empty($customer_phone)) {
+                $stmt = $pdo->prepare("SELECT id FROM customers WHERE phone = ?");
+                $stmt->execute([$customer_phone]);
+                $existing = $stmt->fetch();
+                if($existing) {
+                    $customer_id = $existing['id'];
+                }
+            }
+            if(empty($customer_id) && !empty($customer_name)) {
+                $stmt = $pdo->prepare("SELECT id FROM customers WHERE customer_name = ?");
+                $stmt->execute([$customer_name]);
+                $existing = $stmt->fetch();
+                if($existing) {
+                    $customer_id = $existing['id'];
+                }
+            }
+        }
+        
+        if($customer_id) {
+            // Check if customer has advance balance
+            $stmt = $pdo->prepare("SELECT advance_balance FROM customers WHERE id = ?");
+            $stmt->execute([$customer_id]);
+            $advance_balance = $stmt->fetch()['advance_balance'] ?? 0;
+            
+            if($advance_balance > 0) {
+                $advance_used = min($advance_balance, $total_amount);
+                
+                if($advance_used > 0) {
+                    // Update customer advance balance
+                    $stmt = $pdo->prepare("UPDATE customers SET advance_balance = advance_balance - ? WHERE id = ?");
+                    $stmt->execute([$advance_used, $customer_id]);
+                    
+                    // Get the advance payment record to use
+                    $stmt = $pdo->prepare("SELECT id FROM advance_payments_customer WHERE customer_id = ? AND balance_amount > 0 ORDER BY advance_date LIMIT 1");
+                    $stmt->execute([$customer_id]);
+                    $advance_record = $stmt->fetch();
+                    if($advance_record) {
+                        $advance_payment_id = $advance_record['id'];
+                        $stmt = $pdo->prepare("UPDATE advance_payments_customer SET used_amount = used_amount + ?, balance_amount = balance_amount - ? WHERE id = ?");
+                        $stmt->execute([$advance_used, $advance_used, $advance_payment_id]);
+                        
+                        // Check if fully used
+                        $stmt = $pdo->prepare("SELECT balance_amount FROM advance_payments_customer WHERE id = ?");
+                        $stmt->execute([$advance_payment_id]);
+                        $new_balance = $stmt->fetch()['balance_amount'];
+                        if($new_balance <= 0) {
+                            $stmt = $pdo->prepare("UPDATE advance_payments_customer SET status = 'fully_used' WHERE id = ?");
+                            $stmt->execute([$advance_payment_id]);
+                        }
+                    }
+                    
+                    $total_amount = $total_amount - $advance_used;
+                    $received = isset($_POST['received']) ? floatval($_POST['received']) : $total_amount;
+                    $change = $received - $total_amount;
+                }
+            }
+        }
+    }
+
     if($quantity <= 0) {
         $error = "Invalid quantity! Please check your input.";
     } else {
@@ -88,18 +157,20 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['make_cng_sale'])) {
             
             // Insert into gas_sales table (no stock update for CNG)
             $stmt = $pdo->prepare("
-                INSERT INTO gas_sales (
+            INSERT INTO gas_sales (
                     invoice_no, sale_date, shift_id, nozzle_id, operator_id,
                     customer_name, customer_phone, sale_type,
                     opening_meter, closing_meter, quantity_liters,
-                    unit_price, total_amount, received_amount, change_amount, status
-                ) VALUES (?, NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed')
+                    unit_price, total_amount, received_amount, change_amount,
+                    status, advance_used, advance_payment_id
+                ) VALUES (?, NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed', ?, ?)
             ");
             $stmt->execute([
                 $invoice_no, $shift_id, $nozzle_id, $user['id'],
                 $customer_name, $customer_phone, $sale_type,
                 $opening_meter, $closing_meter, $quantity,
-                $unit_price, $total_amount, $received, $change
+                $unit_price, $total_amount, $received, $change,
+                $advance_used, $advance_payment_id
             ]);
             
             $sale_id = $pdo->lastInsertId();
@@ -189,6 +260,9 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['make_cng_sale'])) {
             
             $pdo->commit();
             
+            // =============================================
+            // STORE SESSION DATA
+            // =============================================
             $_SESSION['last_cng_invoice'] = [
                 'invoice_no' => $invoice_no,
                 'customer_name' => $customer_name,
@@ -206,30 +280,10 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['make_cng_sale'])) {
                 'sale_type' => $sale_type
             ];
             
-            $success = "✅ CNG sale completed! Invoice: $invoice_no<br>
-                        <strong>Quantity:</strong> " . number_format($quantity, 2) . " m³<br>
-                        <strong>Amount:</strong> BDT " . number_format($total_amount, 2);
-            
             // =============================================
-            // THERMAL PRINTING OPTION - ADDED
+            // AUTO REDIRECT TO THERMAL RECEIPT PREVIEW
             // =============================================
-            ?>
-            <div class="alert alert-success alert-dismissible fade show">
-                <h5><i class="fas fa-check-circle"></i> <?php echo $success; ?></h5>
-                <div class="mt-3">
-                    <a href="print_thermal_receipt.php?invoice=<?php echo $invoice_no; ?>&type=cng" class="btn btn-primary" target="_blank">
-                        <i class="fas fa-receipt"></i> Thermal Receipt
-                    </a>
-                    <a href="print_cng_invoice.php?invoice=<?php echo $invoice_no; ?>" class="btn btn-secondary" target="_blank">
-                        <i class="fas fa-file-alt"></i> Full Invoice
-                    </a>
-                    <a href="gas_sales.php" class="btn btn-success">
-                        <i class="fas fa-plus"></i> New Sale
-                    </a>
-                </div>
-                <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
-            </div>
-            <?php
+            header("Location: print_thermal_receipt.php?invoice=" . $invoice_no . "&type=cng");
             exit();
             
         } catch(Exception $e) {

@@ -11,7 +11,7 @@ $active_tab = $_GET['tab'] ?? 'active';
 $stmt = $pdo->query("
     SELECT sc.*, sh.shift_name 
     FROM shift_closing sc 
-    JOIN shifts sh ON sc.shift_id = sh.id 
+    JOIN shift_schedule sh ON sc.shift_id = sh.id 
     WHERE sc.status = 'open' 
     ORDER BY sc.id DESC 
     LIMIT 1
@@ -19,7 +19,7 @@ $stmt = $pdo->query("
 $active_shift = $stmt->fetch();
 
 // Get all shifts
-$shifts = $pdo->query("SELECT * FROM shifts WHERE is_active = 1")->fetchAll();
+$shifts = $pdo->query("SELECT * FROM shift_schedule WHERE is_active = 1")->fetchAll();
 
 // Get tanks and nozzles for stock
 $tanks = $pdo->query("SELECT t.*, p.product_name FROM tanks t JOIN fuel_products p ON t.product_id = p.id WHERE t.is_active = 1")->fetchAll();
@@ -64,7 +64,7 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['start_shift'])) {
         $stmt = $pdo->query("
             SELECT sc.*, sh.shift_name 
             FROM shift_closing sc 
-            JOIN shifts sh ON sc.shift_id = sh.id 
+            JOIN shift_schedule sh ON sc.shift_id = sh.id 
             WHERE sc.status = 'open' 
             ORDER BY sc.id DESC 
             LIMIT 1
@@ -95,54 +95,90 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['close_shift'])) {
             throw new Exception("Shift not found or already closed!");
         }
         
-        // Calculate sales totals
-        // Get sales for this shift
+        // =============================================
+        // FIXED: Calculate ALL sales types separately
+        // =============================================
+        
+        // 1. Liquid Fuel Sales (Diesel, Petrol, Octane, LPG)
         $stmt = $pdo->prepare("
             SELECT 
-                COALESCE(SUM(CASE WHEN sale_type = 'cash' THEN total_amount ELSE 0 END), 0) as cash_sales,
-                COALESCE(SUM(CASE WHEN sale_type = 'credit' THEN total_amount ELSE 0 END), 0) as credit_sales,
-                COALESCE(SUM(CASE WHEN sale_type = 'advance' THEN total_amount ELSE 0 END), 0) as advance_sales,
-                COUNT(*) as total_sales
-            FROM sales 
-            WHERE shift_id = ? AND DATE(sale_date) = ?
+                p.product_name,
+                COALESCE(SUM(CASE WHEN s.sale_type = 'cash' THEN s.total_amount ELSE 0 END), 0) as cash_sales,
+                COALESCE(SUM(CASE WHEN s.sale_type = 'credit' THEN s.total_amount ELSE 0 END), 0) as credit_sales,
+                COALESCE(SUM(s.total_amount), 0) as total_sales,
+                COUNT(*) as transaction_count
+            FROM sales s
+            JOIN fuel_products p ON s.product_id = p.id
+            WHERE s.shift_id = ? AND DATE(s.sale_date) = ?
+            GROUP BY p.product_name
         ");
         $stmt->execute([$shift['shift_id'], $shift['shift_date']]);
-        $sales = $stmt->fetch();
+        $liquid_sales_by_product = $stmt->fetchAll();
         
-        // Get gas sales
+        // 2. CNG Sales
         $stmt = $pdo->prepare("
-            SELECT COALESCE(SUM(total_amount), 0) as total_gas_sales
-            FROM gas_sales 
-            WHERE shift_id = ? AND DATE(sale_date) = ?
+            SELECT 
+                'CNG' as product_name,
+                COALESCE(SUM(CASE WHEN gs.sale_type = 'cash' THEN gs.total_amount ELSE 0 END), 0) as cash_sales,
+                COALESCE(SUM(CASE WHEN gs.sale_type = 'credit' THEN gs.total_amount ELSE 0 END), 0) as credit_sales,
+                COALESCE(SUM(gs.total_amount), 0) as total_sales,
+                COUNT(*) as transaction_count
+            FROM gas_sales gs
+            WHERE gs.shift_id = ? AND DATE(gs.sale_date) = ? AND gs.status = 'completed'
         ");
         $stmt->execute([$shift['shift_id'], $shift['shift_date']]);
-        $gas_sales = $stmt->fetch()['total_gas_sales'];
+        $cng_sales = $stmt->fetch();
         
-        // Update shift closing
+        // 3. Total Summary
+        $total_cash_sales = 0;
+        $total_credit_sales = 0;
+        $total_liquid_sales = 0;
+        $total_cng_sales = 0;
+        $total_all_sales = 0;
+        
+        foreach($liquid_sales_by_product as $liquid) {
+            $total_cash_sales += $liquid['cash_sales'];
+            $total_credit_sales += $liquid['credit_sales'];
+            $total_liquid_sales += $liquid['total_sales'];
+        }
+        
+        if($cng_sales) {
+            $total_cash_sales += $cng_sales['cash_sales'];
+            $total_credit_sales += $cng_sales['credit_sales'];
+            $total_cng_sales = $cng_sales['total_sales'];
+        }
+        
+        $total_all_sales = $total_liquid_sales + $total_cng_sales;
+        
+        // Update shift closing with all sales data
         $stmt = $pdo->prepare("
             UPDATE shift_closing 
             SET closing_time = NOW(),
                 closed_by = ?,
                 total_cash_sales = ?,
                 total_credit_sales = ?,
-                total_advance_sales = ?,
                 total_gas_sales = ?,
+                total_liquid_sales = ?,
+                total_cng_sales = ?,
+                total_all_sales = ?,
                 total_receipts = ?,
                 net_cash = ?,
-                notes = CONCAT(notes, '\n', ?),
+                closing_notes = ?,
                 status = 'closed',
                 closed_at = NOW()
             WHERE id = ?
         ");
         $stmt->execute([
             $user['id'],
-            $sales['cash_sales'],
-            $sales['credit_sales'],
-            $sales['advance_sales'],
-            $gas_sales,
+            $total_cash_sales,
+            $total_credit_sales,
+            $cng_sales ? $cng_sales['total_sales'] : 0,
+            $total_liquid_sales,
+            $total_cng_sales,
+            $total_all_sales,
             $closing_cash,
             $closing_cash,
-            "Shift closed. Cash in drawer: BDT " . number_format($closing_cash, 2),
+            $notes,
             $shift_id
         ]);
         
@@ -168,11 +204,40 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['close_shift'])) {
         }
         
         $pdo->commit();
-        $success = "✅ Shift closed successfully!<br>
-                    <strong>Cash Sales:</strong> BDT " . number_format($sales['cash_sales'], 2) . "<br>
-                    <strong>Credit Sales:</strong> BDT " . number_format($sales['credit_sales'], 2) . "<br>
-                    <strong>Gas Sales:</strong> BDT " . number_format($gas_sales, 2) . "<br>
-                    <strong>Cash in Drawer:</strong> BDT " . number_format($closing_cash, 2);
+        
+        // Build success message with breakdown
+        $success = "✅ Shift closed successfully!<br><br>";
+        $success .= "<strong>📊 SALES BREAKDOWN:</strong><br>";
+        $success .= "<div class='table-responsive'><table class='table table-sm table-bordered'>";
+        $success .= "<thead><tr><th>Product</th><th class='text-end'>Cash</th><th class='text-end'>Credit</th><th class='text-end'>Total</th></tr></thead><tbody>";
+        
+        foreach($liquid_sales_by_product as $liquid) {
+            $success .= "<tr>";
+            $success .= "<td>{$liquid['product_name']}</td>";
+            $success .= "<td class='text-end'>" . number_format($liquid['cash_sales'], 2) . "</td>";
+            $success .= "<td class='text-end'>" . number_format($liquid['credit_sales'], 2) . "</td>";
+            $success .= "<td class='text-end fw-bold'>" . number_format($liquid['total_sales'], 2) . "</td>";
+            $success .= "</tr>";
+        }
+        
+        if($cng_sales && $cng_sales['total_sales'] > 0) {
+            $success .= "<tr>";
+            $success .= "<td>CNG</td>";
+            $success .= "<td class='text-end'>" . number_format($cng_sales['cash_sales'], 2) . "</td>";
+            $success .= "<td class='text-end'>" . number_format($cng_sales['credit_sales'], 2) . "</td>";
+            $success .= "<td class='text-end fw-bold'>" . number_format($cng_sales['total_sales'], 2) . "</td>";
+            $success .= "</tr>";
+        }
+        
+        $success .= "<tr class='table-primary fw-bold'>";
+        $success .= "<td>TOTAL</td>";
+        $success .= "<td class='text-end'>" . number_format($total_cash_sales, 2) . "</td>";
+        $success .= "<td class='text-end'>" . number_format($total_credit_sales, 2) . "</td>";
+        $success .= "<td class='text-end'>" . number_format($total_all_sales, 2) . "</td>";
+        $success .= "</tr>";
+        $success .= "</tbody></table></div>";
+        
+        $success .= "<strong>💰 Cash in Drawer:</strong> " . number_format($closing_cash, 2);
         
         $active_shift = null;
         
@@ -186,7 +251,7 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['close_shift'])) {
 $shift_history = $pdo->query("
     SELECT sc.*, sh.shift_name, u1.full_name as opened_by_name, u2.full_name as closed_by_name
     FROM shift_closing sc
-    JOIN shifts sh ON sc.shift_id = sh.id
+    JOIN shift_schedule sh ON sc.shift_id = sh.id
     LEFT JOIN users u1 ON sc.opened_by = u1.id
     LEFT JOIN users u2 ON sc.closed_by = u2.id
     WHERE sc.status = 'closed'
@@ -232,6 +297,12 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
         .badge-open { background: #28a745; color: white; }
         .badge-closed { background: #6c757d; color: white; }
         .badge-verified { background: #17a2b8; color: white; }
+        .product-breakdown {
+            font-size: 13px;
+        }
+        .product-breakdown td {
+            padding: 3px 8px;
+        }
     </style>
 </head>
 <body>
@@ -309,8 +380,8 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                     <div class="stats-card" style="background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);">
                         <i class="fas fa-money-bill-wave"></i>
                         <h3><?php echo $currency; ?> <?php 
-                            $total_sales = array_sum(array_column($shift_history, 'total_cash_sales'));
-                            echo number_format($total_sales, 2);
+                            $total_cash = array_sum(array_column($shift_history, 'total_cash_sales'));
+                            echo number_format($total_cash, 2);
                         ?></h3>
                         <p>Total Cash Sales</p>
                     </div>
@@ -329,10 +400,10 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                     <div class="stats-card" style="background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);">
                         <i class="fas fa-gas-pump"></i>
                         <h3><?php echo $currency; ?> <?php 
-                            $total_gas = array_sum(array_column($shift_history, 'total_gas_sales'));
-                            echo number_format($total_gas, 2);
+                            $total_all = array_sum(array_column($shift_history, 'total_all_sales'));
+                            echo number_format($total_all, 2);
                         ?></h3>
-                        <p>Total Gas Sales</p>
+                        <p>Total All Sales</p>
                     </div>
                 </div>
             </div>
@@ -352,10 +423,11 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                                     <th>Opened By</th>
                                     <th>Opened At</th>
                                     <th>Closed By</th>
-                                    <th>Cash Sales</th>
-                                    <th>Credit Sales</th>
-                                    <th>Gas Sales</th>
-                                    <th>Net Cash</th>
+                                    <th class="text-end">Cash Sales</th>
+                                    <th class="text-end">Credit Sales</th>
+                                    <th class="text-end">CNG Sales</th>
+                                    <th class="text-end">Liquid Sales</th>
+                                    <th class="text-end">Total Sales</th>
                                     <th>Status</th>
                                 </tr>
                             </thead>
@@ -369,8 +441,9 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                                     <td><?php echo $shift['closed_by_name']; ?></td>
                                     <td class="text-end text-success"><?php echo $currency; ?> <?php echo number_format($shift['total_cash_sales'], 2); ?></td>
                                     <td class="text-end text-warning"><?php echo $currency; ?> <?php echo number_format($shift['total_credit_sales'], 2); ?></td>
-                                    <td class="text-end text-info"><?php echo $currency; ?> <?php echo number_format($shift['total_gas_sales'], 2); ?></td>
-                                    <td class="text-end fw-bold"><?php echo $currency; ?> <?php echo number_format($shift['net_cash'], 2); ?></td>
+                                    <td class="text-end text-info"><?php echo $currency; ?> <?php echo number_format($shift['total_cng_sales'], 2); ?></td>
+                                    <td class="text-end text-primary"><?php echo $currency; ?> <?php echo number_format($shift['total_liquid_sales'], 2); ?></td>
+                                    <td class="text-end fw-bold"><?php echo $currency; ?> <?php echo number_format($shift['total_all_sales'], 2); ?></td>
                                     <td>
                                         <span class="badge badge-<?php echo $shift['status']; ?>">
                                             <?php echo ucfirst($shift['status']); ?>
@@ -384,8 +457,9 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                                     <td colspan="5" class="text-end">TOTAL:</td>
                                     <td class="text-end"><?php echo $currency; ?> <?php echo number_format(array_sum(array_column($shift_history, 'total_cash_sales')), 2); ?></td>
                                     <td class="text-end"><?php echo $currency; ?> <?php echo number_format(array_sum(array_column($shift_history, 'total_credit_sales')), 2); ?></td>
-                                    <td class="text-end"><?php echo $currency; ?> <?php echo number_format(array_sum(array_column($shift_history, 'total_gas_sales')), 2); ?></td>
-                                    <td class="text-end"><?php echo $currency; ?> <?php echo number_format(array_sum(array_column($shift_history, 'net_cash')), 2); ?></td>
+                                    <td class="text-end"><?php echo $currency; ?> <?php echo number_format(array_sum(array_column($shift_history, 'total_cng_sales')), 2); ?></td>
+                                    <td class="text-end"><?php echo $currency; ?> <?php echo number_format(array_sum(array_column($shift_history, 'total_liquid_sales')), 2); ?></td>
+                                    <td class="text-end"><?php echo $currency; ?> <?php echo number_format(array_sum(array_column($shift_history, 'total_all_sales')), 2); ?></td>
                                     <td></td>
                                 </tr>
                             </tfoot>
@@ -426,7 +500,7 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                             <strong>Shift will record:</strong><br>
                             - Opening tank stocks<br>
                             - Opening nozzle meter readings<br>
-                            - All sales during the shift
+                            - All sales during the shift (Liquid + CNG)
                         </div>
                     </div>
                     <div class="modal-footer">

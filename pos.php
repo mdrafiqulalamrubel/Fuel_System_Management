@@ -132,12 +132,89 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['make_sale'])) {
         $quantity = floatval($_POST['quantity']);
         $total_amount = $quantity * $unit_price;
     }
-    
+
     $subtotal = $total_amount;
     $vat_amount = 0;
     $tax_amount = 0;
     $received = isset($_POST['received']) ? floatval($_POST['received']) : 0;
     $change = $received - $total_amount;
+
+    // =============================================
+    // CHECK FOR CUSTOMER ADVANCE BALANCE
+    // =============================================
+
+    $advance_used = 0;
+    $advance_payment_id = null;
+
+    if($sale_type == 'credit' && !empty($customer_name)) {
+        // First get or create customer ID if not set
+        if(empty($customer_id)) {
+            // Get or create customer
+            if(!empty($customer_phone)) {
+                $stmt = $pdo->prepare("SELECT id FROM customers WHERE phone = ?");
+                $stmt->execute([$customer_phone]);
+                $existing = $stmt->fetch();
+                if($existing) {
+                    $customer_id = $existing['id'];
+                }
+            }
+            if(empty($customer_id) && !empty($customer_name)) {
+                $stmt = $pdo->prepare("SELECT id FROM customers WHERE customer_name = ?");
+                $stmt->execute([$customer_name]);
+                $existing = $stmt->fetch();
+                if($existing) {
+                    $customer_id = $existing['id'];
+                }
+            }
+        }
+        
+        if($customer_id) {
+            // Check if customer has advance balance
+            $stmt = $pdo->prepare("SELECT advance_balance FROM customers WHERE id = ?");
+            $stmt->execute([$customer_id]);
+            $advance_balance = $stmt->fetch()['advance_balance'] ?? 0;
+            
+            if($advance_balance > 0) {
+                // Use advance balance to reduce the amount
+                $advance_used = min($advance_balance, $total_amount);
+                
+                if($advance_used > 0) {
+                    // Update customer advance balance
+                    $stmt = $pdo->prepare("UPDATE customers SET advance_balance = advance_balance - ? WHERE id = ?");
+                    $stmt->execute([$advance_used, $customer_id]);
+                    
+                    // Get the advance payment record to use
+                    $stmt = $pdo->prepare("SELECT id FROM advance_payments_customer WHERE customer_id = ? AND balance_amount > 0 ORDER BY advance_date LIMIT 1");
+                    $stmt->execute([$customer_id]);
+                    $advance_record = $stmt->fetch();
+                    if($advance_record) {
+                        $advance_payment_id = $advance_record['id'];
+                        
+                        // Update the advance payment record
+                        $stmt = $pdo->prepare("UPDATE advance_payments_customer SET used_amount = used_amount + ?, balance_amount = balance_amount - ? WHERE id = ?");
+                        $stmt->execute([$advance_used, $advance_used, $advance_payment_id]);
+                        
+                        // Check if fully used
+                        $stmt = $pdo->prepare("SELECT balance_amount FROM advance_payments_customer WHERE id = ?");
+                        $stmt->execute([$advance_payment_id]);
+                        $new_balance = $stmt->fetch()['balance_amount'];
+                        if($new_balance <= 0) {
+                            $stmt = $pdo->prepare("UPDATE advance_payments_customer SET status = 'fully_used' WHERE id = ?");
+                            $stmt->execute([$advance_payment_id]);
+                        }
+                    }
+                    
+                    // Update total amount to reflect advance usage
+                    $total_amount = $total_amount - $advance_used;
+                    $subtotal = $total_amount;
+                    $received = isset($_POST['received']) ? floatval($_POST['received']) : $total_amount;
+                    $change = $received - $total_amount;
+                }
+            }
+        }
+    }
+
+
     
     // For LPG, handle kg conversion if needed
     if($unit_type == 'kilograms') {
@@ -169,21 +246,24 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['make_sale'])) {
         
         // Insert sale
         $stmt = $pdo->prepare("
-            INSERT INTO sales (
-                invoice_no, shift_id, nozzle_id, operator_id,
-                customer_name, customer_phone, sale_type,
-                product_id, quantity_liters, unit_price,
-                subtotal, vat_amount, tax_amount,
-                total_amount, received_amount, change_amount
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO sales (
+            invoice_no, shift_id, nozzle_id, operator_id,
+            customer_name, customer_phone, sale_type,
+            product_id, quantity_liters, unit_price,
+            subtotal, vat_amount, tax_amount,
+            total_amount, received_amount, change_amount,
+            advance_used, advance_payment_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ");
         $stmt->execute([
             $invoice_no, $shift_id, $nozzle_id, $user['id'],
             $customer_name, $customer_phone, $sale_type,
             $product_id, $quantity, $unit_price,
             $subtotal, $vat_amount, $tax_amount,
-            $total_amount, $received, $change
+            $total_amount, $received, $change,
+            $advance_used, $advance_payment_id
         ]);
+        
         $sale_id = $pdo->lastInsertId();
         
         // Update tank stock

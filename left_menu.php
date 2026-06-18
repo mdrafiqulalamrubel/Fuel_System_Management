@@ -110,8 +110,61 @@ $user_role = $user['role'] ?? 'guest';
                     <span class="badge">New Sale</span>
                 </a>
             </li>
+
+                <!-- Item & Services -->
+                <li class="nav-item">
+                    <a class="nav-link collapsed" data-bs-toggle="collapse" href="#itemMenu">
+                        <i class="fas fa-boxes"></i> <span>Item & Services</span>
+                        <i class="fas fa-chevron-down float-end"></i>
+                    </a>
+                    <div class="collapse" id="itemMenu">
+                        <ul class="nav flex-column ms-3">
+                            <li class="nav-item">
+                                <a class="nav-link" href="item_pos.php">
+                                    <i class="fas fa-shopping-cart"></i> POS
+                                </a>
+                            </li>
+                            <li class="nav-item">
+                                <a class="nav-link" href="item_management.php">
+                                    <i class="fas fa-cog"></i> Manage Items
+                                </a>
+                            </li>
+                            <li class="nav-item">
+                                <a class="nav-link" href="item_sales_report.php">
+                                    <i class="fas fa-chart-bar"></i> Sales Report
+                                </a>
+                            </li>
+                        </ul>
+                    </div>
+                </li>
+
+                <!-- Purchase Management -->
+                <li class="nav-item">
+                    <a class="nav-link collapsed" data-bs-toggle="collapse" href="#purchaseMenu">
+                        <i class="fas fa-truck"></i> <span>Purchase</span>
+                        <i class="fas fa-chevron-down float-end"></i>
+                    </a>
+                    <div class="collapse" id="purchaseMenu">
+                        <ul class="nav flex-column ms-3">
+                            <li class="nav-item">
+                                <a class="nav-link" href="item_purchase.php">
+                                    <i class="fas fa-plus-circle"></i> New Purchase
+                                </a>
+                            </li>
+                            <li class="nav-item">
+                                <a class="nav-link" href="item_purchase.php?tab=history">
+                                    <i class="fas fa-history"></i> Purchase History
+                                </a>
+                            </li>
+                            <li class="nav-item">
+                                <a class="nav-link" href="item_purchase.php?tab=stock">
+                                    <i class="fas fa-warehouse"></i> Stock Overview
+                                </a>
+                            </li>
+                        </ul>
+                    </div>
+                </li> 
         </div>
-            
 
         <!-- Shift Management -->
         <li class="nav-title" onclick="toggleSection('shiftSection')" style="cursor: pointer;">
@@ -150,6 +203,11 @@ $user_role = $user['role'] ?? 'guest';
                     <i class="fas fa-tachometer-alt"></i> <span>Meter Readings</span>
                 </a>
             </li>
+            <li class="nav-item">
+                <a class="nav-link" href="meter_reading_report.php">
+                    <i class="fas fa-tachometer-alt"></i> <span>Meter Reading Report</span>
+                </a>
+            </li>
             <li class="nav-item <?php echo $current_page == 'fuel_receiving.php' ? 'active' : ''; ?>">
                 <a class="nav-link" href="fuel_receiving.php">
                     <i class="fas fa-truck"></i> <span>Fuel/GAS Receiving</span>
@@ -162,6 +220,8 @@ $user_role = $user['role'] ?? 'guest';
             </li>
         </div>
         
+     
+
         <!-- Accounting -->
         <?php if(in_array($user_role, ['super_admin', 'admin', 'accountant'])): ?>
         <li class="nav-title" onclick="toggleSection('accountingSection')" style="cursor: pointer;">
@@ -271,21 +331,15 @@ $user_role = $user['role'] ?? 'guest';
                     <i class="fas fa-building"></i> <span>Shop Rental</span>
                 </a>
             </li>
-        </div>
-        
+        </div>    
+
         <!-- Reports Center -->
         <li class="nav-item <?php echo $current_page == 'reports.php' ? 'active' : ''; ?>">
             <a class="nav-link" href="reports.php">
                 <i class="fas fa-chart-bar"></i> <span>Reports Center</span>
             </a>
-        </li>
-        <li class="nav-item">
-            <a class="nav-link" href="cng_sales_report.php">
-                <i class="fas fa-chart-bar"></i> CNG Sales Report
-            </a>
-        </li>     
+        </li>   
        
-        
         <!-- Settings -->
         <?php if(in_array($user_role, ['super_admin', 'admin'])): ?>
         <li class="nav-divider"></li>
