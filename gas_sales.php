@@ -56,6 +56,8 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['make_cng_sale'])) {
     $sale_type = $_POST['sale_type'];
     $customer_name = isset($_POST['customer_name']) ? $_POST['customer_name'] : '';
     $customer_phone = isset($_POST['customer_phone']) ? $_POST['customer_phone'] : '';
+    $vehicle_number = isset($_POST['vehicle_number']) ? trim($_POST['vehicle_number']) : '';
+    $remarks = isset($_POST['remarks']) ? trim($_POST['remarks']) : '';
     $input_type = $_POST['input_type'] ?? 'amount'; // 'amount' or 'unit'
     $amount_input = isset($_POST['amount_input']) ? floatval($_POST['amount_input']) : 0;
     $unit_input = isset($_POST['unit_input']) ? floatval($_POST['unit_input']) : 0;
@@ -155,22 +157,24 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['make_cng_sale'])) {
         try {
             $pdo->beginTransaction();
             
-            // Insert into gas_sales table (no stock update for CNG)
+            // Insert into gas_sales table - ADDED vehicle_number and remarks
             $stmt = $pdo->prepare("
             INSERT INTO gas_sales (
-                    invoice_no, sale_date, shift_id, nozzle_id, operator_id,
-                    customer_name, customer_phone, sale_type,
-                    opening_meter, closing_meter, quantity_liters,
-                    unit_price, total_amount, received_amount, change_amount,
-                    status, advance_used, advance_payment_id
-                ) VALUES (?, NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed', ?, ?)
-            ");
+                invoice_no, sale_date, shift_id, nozzle_id, operator_id,
+                customer_name, customer_phone, sale_type,
+                opening_meter, closing_meter, quantity_liters,
+                unit_price, total_amount, received_amount, change_amount,
+                status, advance_used, advance_payment_id,
+                vehicle_number, remarks
+            ) VALUES (?, NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed', ?, ?, ?, ?)
+        ");
             $stmt->execute([
                 $invoice_no, $shift_id, $nozzle_id, $user['id'],
                 $customer_name, $customer_phone, $sale_type,
                 $opening_meter, $closing_meter, $quantity,
                 $unit_price, $total_amount, $received, $change,
-                $advance_used, $advance_payment_id
+                $advance_used, $advance_payment_id,
+                $vehicle_number, $remarks
             ]);
             
             $sale_id = $pdo->lastInsertId();
@@ -267,6 +271,8 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['make_cng_sale'])) {
                 'invoice_no' => $invoice_no,
                 'customer_name' => $customer_name,
                 'customer_phone' => $customer_phone,
+                'vehicle_number' => $vehicle_number,
+                'remarks' => $remarks,
                 'date' => date('Y-m-d H:i:s'),
                 'opening_meter' => $opening_meter,
                 'closing_meter' => $closing_meter,
@@ -281,9 +287,9 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['make_cng_sale'])) {
             ];
             
             // =============================================
-            // AUTO REDIRECT TO THERMAL RECEIPT PREVIEW
+            // REDIRECT TO CNG INVOICE (NOT THERMAL)
             // =============================================
-            header("Location: print_thermal_receipt.php?invoice=" . $invoice_no . "&type=cng");
+            header("Location: print_cng_invoice.php?invoice=" . $invoice_no);
             exit();
             
         } catch(Exception $e) {
@@ -374,6 +380,13 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
             border-radius: 15px;
             font-size: 11px;
         }
+        .vehicle-field { 
+            background: #f8f9fa; 
+            padding: 8px 12px; 
+            border-radius: 8px; 
+            margin: 5px 0; 
+        }
+        .vehicle-field i { color: #667eea; }
     </style>
 </head>
 <body>
@@ -534,6 +547,26 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                                     </div>
                                 </div>
                                 
+                                <!-- ============================================= -->
+                                <!-- VEHICLE NUMBER & REMARKS - ADDED -->
+                                <!-- ============================================= -->
+                                <div class="row">
+                                    <div class="col-md-6">
+                                        <div class="mb-3">
+                                            <label><i class="fas fa-car"></i> Vehicle Number</label>
+                                            <input type="text" name="vehicle_number" id="vehicle_number" class="form-control" placeholder="e.g., Dhaka-Metro-1234">
+                                            <small class="text-muted">Enter vehicle registration number</small>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-6">
+                                        <div class="mb-3">
+                                            <label><i class="fas fa-comment"></i> Remarks</label>
+                                            <input type="text" name="remarks" id="remarks" class="form-control" placeholder="Any additional notes">
+                                            <small class="text-muted">Optional remarks or notes</small>
+                                        </div>
+                                    </div>
+                                </div>
+                                
                                 <div id="customer_fields" style="display:none;">
                                     <div class="row">
                                         <div class="col-md-6">
@@ -647,6 +680,10 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                             <div class="alert alert-primary">
                                 <i class="fas fa-pipe"></i>
                                 <strong>Pipeline Nozzles:</strong> These nozzles are directly connected to the government gas pipeline.
+                            </div>
+                            <div class="alert alert-info">
+                                <i class="fas fa-car"></i>
+                                <strong>Vehicle Number:</strong> Optional field for recording vehicle registration number.
                             </div>
                         </div>
                     </div>
@@ -918,6 +955,10 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
             confirmMsg += `📌 Type: ${document.querySelector('#sale_type option:checked').text}\n`;
             if(saleType == 'credit') {
                 confirmMsg += `👤 Customer: ${document.getElementById('customer_name').value.trim()}\n`;
+            }
+            let vehicle = document.getElementById('vehicle_number').value.trim();
+            if(vehicle) {
+                confirmMsg += `🚗 Vehicle: ${vehicle}\n`;
             }
             confirmMsg += `\nAre you sure you want to proceed?`;
             

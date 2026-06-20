@@ -54,6 +54,8 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['make_cng_sale'])) {
     $sale_type = $_POST['sale_type'];
     $customer_name = isset($_POST['customer_name']) ? $_POST['customer_name'] : '';
     $customer_phone = isset($_POST['customer_phone']) ? $_POST['customer_phone'] : '';
+    $vehicle_number = isset($_POST['vehicle_number']) ? trim($_POST['vehicle_number']) : '';
+    $remarks = isset($_POST['remarks']) ? trim($_POST['remarks']) : '';
     
     // Calculate quantity (difference in meter reading)
     $quantity = $closing_meter - $opening_meter;
@@ -69,20 +71,22 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['make_cng_sale'])) {
         try {
             $pdo->beginTransaction();
             
-            // Insert into gas_sales table
+            // Insert into gas_sales table - ADDED vehicle_number and remarks
             $stmt = $pdo->prepare("
                 INSERT INTO gas_sales (
                     invoice_no, sale_date, shift_id, nozzle_id, operator_id,
                     customer_name, customer_phone, sale_type,
                     opening_meter, closing_meter, quantity_liters,
-                    unit_price, total_amount, received_amount, change_amount, status
-                ) VALUES (?, NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed')
+                    unit_price, total_amount, received_amount, change_amount, status,
+                    vehicle_number, remarks
+                ) VALUES (?, NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed', ?, ?)
             ");
             $stmt->execute([
                 $invoice_no, $shift_id, $nozzle_id, $user['id'],
                 $customer_name, $customer_phone, $sale_type,
                 $opening_meter, $closing_meter, $quantity,
-                $unit_price, $total_amount, $received, $change
+                $unit_price, $total_amount, $received, $change,
+                $vehicle_number, $remarks
             ]);
             
             $sale_id = $pdo->lastInsertId();
@@ -173,11 +177,13 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['make_cng_sale'])) {
             
             $pdo->commit();
             
-            // Store in session - FIXED: Use consistent session key
+            // Store in session
             $_SESSION['last_cng_invoice'] = [
                 'invoice_no' => $invoice_no,
                 'customer_name' => $customer_name,
                 'customer_phone' => $customer_phone,
+                'vehicle_number' => $vehicle_number,
+                'remarks' => $remarks,
                 'date' => date('Y-m-d H:i:s'),
                 'opening_meter' => $opening_meter,
                 'closing_meter' => $closing_meter,
@@ -234,6 +240,8 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
         .unit-badge { background: #17a2b8; color: white; padding: 2px 10px; border-radius: 15px; font-size: 12px; }
         .pipeline-info { background: #d4edda; border-left: 4px solid #28a745; padding: 10px 15px; border-radius: 8px; margin-bottom: 15px; }
         .pipeline-info i { color: #28a745; }
+        .vehicle-field { background: #f8f9fa; padding: 8px 12px; border-radius: 8px; margin: 5px 0; }
+        .vehicle-field i { color: #667eea; }
     </style>
 </head>
 <body>
@@ -365,6 +373,24 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                                     </div>
                                 </div>
                                 
+                                <!-- Vehicle Number & Remarks - ADDED -->
+                                <div class="row">
+                                    <div class="col-md-6">
+                                        <div class="mb-3">
+                                            <label><i class="fas fa-car"></i> Vehicle Number</label>
+                                            <input type="text" name="vehicle_number" id="vehicle_number" class="form-control" placeholder="e.g., Dhaka-Metro-1234">
+                                            <small class="text-muted">Enter vehicle registration number</small>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-6">
+                                        <div class="mb-3">
+                                            <label><i class="fas fa-comment"></i> Remarks</label>
+                                            <input type="text" name="remarks" id="remarks" class="form-control" placeholder="Any additional notes">
+                                            <small class="text-muted">Optional remarks or notes</small>
+                                        </div>
+                                    </div>
+                                </div>
+                                
                                 <div id="customer_fields" style="display:none;">
                                     <div class="row">
                                         <div class="col-md-6">
@@ -461,7 +487,8 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                             <div class="alert alert-info">
                                 <strong>Unit:</strong> Cubic Meters (m³)<br>
                                 <strong>Source:</strong> Government Pipeline (Titas Gas)<br>
-                                <strong>Meter Reading:</strong> Required for each sale
+                                <strong>Meter Reading:</strong> Required for each sale<br>
+                                <strong>Vehicle Number:</strong> Optional - for record keeping
                             </div>
                             <div class="alert alert-warning">
                                 <i class="fas fa-exclamation-triangle"></i>
@@ -602,6 +629,10 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
             confirmMsg += `📌 Type: ${document.querySelector('#sale_type option:checked').text}\n`;
             if(saleType == 'credit') {
                 confirmMsg += `👤 Customer: ${document.getElementById('customer_name').value.trim()}\n`;
+            }
+            let vehicle = document.getElementById('vehicle_number').value.trim();
+            if(vehicle) {
+                confirmMsg += `🚗 Vehicle: ${vehicle}\n`;
             }
             confirmMsg += `\nAre you sure you want to proceed?`;
             

@@ -119,6 +119,8 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['make_sale'])) {
     $sale_type = $_POST['sale_type'];
     $customer_name = isset($_POST['customer_name']) ? $_POST['customer_name'] : '';
     $customer_phone = isset($_POST['customer_phone']) ? $_POST['customer_phone'] : '';
+    $vehicle_number = isset($_POST['vehicle_number']) ? trim($_POST['vehicle_number']) : '';
+    $remarks = isset($_POST['remarks']) ? trim($_POST['remarks']) : '';
     $input_type = $_POST['input_type'] ?? 'liters'; // 'liters' or 'amount'
     
     // Calculate quantity based on input type
@@ -214,7 +216,6 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['make_sale'])) {
         }
     }
 
-
     
     // For LPG, handle kg conversion if needed
     if($unit_type == 'kilograms') {
@@ -244,7 +245,7 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['make_sale'])) {
             throw new Exception("Insufficient stock! Available: " . number_format($current_stock, 2) . " Liters");
         }
         
-        // Insert sale
+        // Insert sale - ADDED vehicle_number and remarks
         $stmt = $pdo->prepare("
         INSERT INTO sales (
             invoice_no, shift_id, nozzle_id, operator_id,
@@ -252,8 +253,9 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['make_sale'])) {
             product_id, quantity_liters, unit_price,
             subtotal, vat_amount, tax_amount,
             total_amount, received_amount, change_amount,
-            advance_used, advance_payment_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            advance_used, advance_payment_id,
+            vehicle_number, remarks
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ");
         $stmt->execute([
             $invoice_no, $shift_id, $nozzle_id, $user['id'],
@@ -261,7 +263,8 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['make_sale'])) {
             $product_id, $quantity, $unit_price,
             $subtotal, $vat_amount, $tax_amount,
             $total_amount, $received, $change,
-            $advance_used, $advance_payment_id
+            $advance_used, $advance_payment_id,
+            $vehicle_number, $remarks
         ]);
         
         $sale_id = $pdo->lastInsertId();
@@ -386,6 +389,8 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['make_sale'])) {
             'invoice_no' => $invoice_no,
             'customer_name' => $customer_name,
             'customer_phone' => $customer_phone,
+            'vehicle_number' => $vehicle_number,
+            'remarks' => $remarks,
             'date' => date('Y-m-d H:i:s'),
             'product_id' => $product_id,
             'product' => $product_data['product_name'],
@@ -654,6 +659,24 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                                         <div class="mb-3">
                                             <label><i class="fas fa-calculator"></i> Total Amount (<?php echo $currency; ?>)</label>
                                             <input type="text" id="total_amount_display" class="form-control" readonly value="0.00">
+                                        </div>
+                                    </div>
+                                </div>
+                                
+                                <!-- Vehicle Number & Remarks - ADDED -->
+                                <div class="row">
+                                    <div class="col-md-6">
+                                        <div class="mb-3">
+                                            <label><i class="fas fa-car"></i> Vehicle Number</label>
+                                            <input type="text" name="vehicle_number" id="vehicle_number" class="form-control" placeholder="e.g., Dhaka-Metro-1234">
+                                            <small class="text-muted">Enter vehicle registration number</small>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-6">
+                                        <div class="mb-3">
+                                            <label><i class="fas fa-comment"></i> Remarks</label>
+                                            <input type="text" name="remarks" id="remarks" class="form-control" placeholder="Any additional notes">
+                                            <small class="text-muted">Optional remarks or notes</small>
                                         </div>
                                     </div>
                                 </div>
@@ -1038,8 +1061,12 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
             let confirmMsg = `⚠️ CONFIRM SALE ⚠️\n\n`;
             confirmMsg += `📊 Quantity: ${quantity.toFixed(2)} ${unitLabel}\n`;
             confirmMsg += `💰 Total: ${document.getElementById('total_amount_display').value} ${document.querySelector('#currency_symbol')?.innerText || 'BDT'}\n`;
-            confirmMsg += `📌 Type: ${document.querySelector('#sale_type option:checked').text}\n\n`;
-            confirmMsg += `Are you sure you want to proceed?`;
+            confirmMsg += `📌 Type: ${document.querySelector('#sale_type option:checked').text}\n`;
+            let vehicle = document.getElementById('vehicle_number').value.trim();
+            if(vehicle) {
+                confirmMsg += `🚗 Vehicle: ${vehicle}\n`;
+            }
+            confirmMsg += `\nAre you sure you want to proceed?`;
             
             if(!confirm(confirmMsg)) {
                 e.preventDefault();

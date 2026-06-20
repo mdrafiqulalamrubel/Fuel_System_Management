@@ -19,6 +19,8 @@ if(isset($_GET['invoice_no'])) {
             'invoice_no' => $sale['invoice_no'],
             'customer_name' => $sale['customer_name'],
             'customer_phone' => $sale['customer_phone'],
+            'vehicle_number' => $sale['vehicle_number'] ?? '',
+            'remarks' => $sale['remarks'] ?? '',
             'date' => $sale['sale_date'],
             'product_id' => $sale['product_id'],
             'product' => $sale['product_name'],
@@ -233,24 +235,19 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
             }
         }
         
-        .print-progress {
-            text-align: center;
-            margin-bottom: 15px;
-            padding: 10px;
-            background: #e3f2fd;
-            border-radius: 5px;
-            display: none;
-        }
-        
-        .print-progress.show {
-            display: block;
-        }
-        
         .reprint-info {
             text-align: center;
             margin-top: 10px;
             font-size: 8px;
             color: #999;
+        }
+        
+        .vehicle-number {
+            background: #f8f9fa;
+            padding: 2px 8px;
+            border-radius: 3px;
+            font-weight: bold;
+            color: #333;
         }
     </style>
 </head>
@@ -266,10 +263,6 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
         <button class="btn btn-back" onclick="goBackToPOS()">
             ◀ Back to POS
         </button>
-    </div>
-    
-    <div class="print-progress" id="printProgress">
-        <i class="fas fa-spinner fa-spin"></i> Preparing print... Please wait.
     </div>
     
     <div class="invoice" id="invoiceContent">
@@ -294,6 +287,24 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                 <span>Customer:</span>
                 <span><?php echo $invoice['customer_name'] ?: 'Walk-in Customer'; ?></span>
             </div>
+            <!-- ============================================= -->
+            <!-- VEHICLE NUMBER - ADDED -->
+            <!-- ============================================= -->
+            <?php if(!empty($invoice['vehicle_number'])): ?>
+            <div class="info-row">
+                <span>Vehicle No:</span>
+                <span><strong class="vehicle-number"><?php echo strtoupper(htmlspecialchars($invoice['vehicle_number'])); ?></strong></span>
+            </div>
+            <?php endif; ?>
+            <!-- ============================================= -->
+            <!-- REMARKS - ADDED -->
+            <!-- ============================================= -->
+            <?php if(!empty($invoice['remarks'])): ?>
+            <div class="info-row">
+                <span>Remarks:</span>
+                <span style="font-size:9px; max-width:140px; word-wrap:break-word;"><?php echo htmlspecialchars($invoice['remarks']); ?></span>
+            </div>
+            <?php endif; ?>
             <div class="info-row">
                 <span>Operator:</span>
                 <span><?php echo $_SESSION['user_name'] ?? 'Cashier'; ?></span>
@@ -361,18 +372,10 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
             if(printAttempted) return;
             printAttempted = true;
             
-            var progress = document.getElementById('printProgress');
-            if(progress) {
-                progress.classList.add('show');
-            }
-            
             setTimeout(function() {
                 window.print();
                 
                 window.onafterprint = function() {
-                    if(progress) {
-                        progress.classList.remove('show');
-                    }
                     if(confirm('Print completed! Do you want to go back to POS screen?')) {
                         goBackToPOS();
                     }
@@ -381,9 +384,7 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
         }
         
         function reprintInvoice() {
-            // Reset print attempt flag
             printAttempted = false;
-            // Trigger print again
             printInvoice();
         }
         
@@ -391,7 +392,6 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
             window.location.href = 'pos.php';
         }
         
-        // Auto print when page loads (only for new sales, not for reprints from report)
         <?php if(!isset($_GET['from_report'])): ?>
         window.onload = function() {
             setTimeout(function() {
