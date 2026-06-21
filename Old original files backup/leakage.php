@@ -1,5 +1,4 @@
 <?php
-// leakage.php
 require_once 'config/database.php';
 if(!isLoggedIn()) redirect('index.php');
 
@@ -8,7 +7,7 @@ $error = '';
 $success = '';
 $active_tab = $_GET['tab'] ?? 'adjustment';
 
-// Get tanks - EXCLUDE CNG (Pipeline)
+// Get tanks with calibration factors - EXCLUDE CNG (Pipeline)
 $tanks = $pdo->query("
     SELECT t.*, p.product_name, p.purchase_rate 
     FROM tanks t 
@@ -45,7 +44,22 @@ if(!$inventory_account) {
 // Process adjustment
 if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['submit_adjustment'])) {
     $tank_id = $_POST['tank_id'];
-    $physical_stock = floatval($_POST['physical_stock']);
+    $calculation_method = $_POST['calculation_method'];
+    $dip_reading = isset($_POST['dip_reading']) ? floatval($_POST['dip_reading']) : 0;
+    
+    // Get physical stock
+    if($calculation_method == 'manual') {
+        $physical_stock = floatval($_POST['physical_stock']);
+    } else {
+        $physical_stock = floatval($_POST['dip_physical_stock']);
+        if($physical_stock == 0 && $dip_reading > 0) {
+            $stmt = $pdo->prepare("SELECT calibration_factor FROM tanks WHERE id = ?");
+            $stmt->execute([$tank_id]);
+            $calibration = $stmt->fetch()['calibration_factor'] ?? 1;
+            $physical_stock = $dip_reading * $calibration;
+        }
+    }
+    
     $reason = $_POST['reason'];
     $adjustment_type = $_POST['adjustment_type'];
     
@@ -62,7 +76,7 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['submit_adjustment'])) {
     $loss_amount = abs($variance) * $tank['purchase_rate'];
     
     // Calculate NEW stock after adjustment
-    $new_stock = $physical_stock;
+    $new_stock = $physical_stock;  // The tank will be updated to physical stock
     
     if($physical_stock < 0) {
         $error = "Physical stock cannot be negative. Please enter a valid amount.";
@@ -74,16 +88,16 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['submit_adjustment'])) {
         try {
             $pdo->beginTransaction();
             
-            // Insert leakage adjustment record - removed dip_stick_reading field
-            $stmt = $pdo->prepare("INSERT INTO leakage_adjustments (adjustment_date, tank_id, system_stock, physical_stock, variance, reason, adjustment_type, loss_amount, created_by, status) VALUES (CURDATE(), ?, ?, ?, ?, ?, ?, ?, ?, 'approved')");
-            $stmt->execute([$tank_id, $system_stock, $physical_stock, $variance, $reason, $adjustment_type, $loss_amount, $user['id']]);
+            // Insert leakage adjustment record
+            $stmt = $pdo->prepare("INSERT INTO leakage_adjustments (adjustment_date, tank_id, system_stock, physical_stock, variance, dip_stick_reading, reason, adjustment_type, loss_amount, created_by, status) VALUES (CURDATE(), ?, ?, ?, ?, ?, ?, ?, ?, ?, 'approved')");
+            $stmt->execute([$tank_id, $system_stock, $physical_stock, $variance, $dip_reading, $reason, $adjustment_type, $loss_amount, $user['id']]);
             $adjustment_id = $pdo->lastInsertId();
             
             // Update tank stock to the physical stock value
             $stmt = $pdo->prepare("UPDATE tanks SET current_stock_liters = ? WHERE id = ?");
             $stmt->execute([$physical_stock, $tank_id]);
             
-            // Stock ledger entry
+            // Stock ledger entry - use the NEW stock as balance
             $quantity = abs($variance);
             $stmt = $pdo->prepare("INSERT INTO stock_ledger (product_id, tank_id, transaction_type, reference_no, out_quantity, in_quantity, balance_quantity, unit_cost) VALUES (?, ?, 'adjustment', ?, ?, ?, ?, ?)");
             
@@ -189,11 +203,12 @@ foreach($recent as $r) {
         }
         .stats-card:hover { transform: translateY(-5px); }
         .stats-card i { font-size: 40px; opacity: 0.5; float: right; }
-        .tank-info {
-            background: #fff3cd;
+        .formula-box {
+            background: #f8f9fa;
+            border-left: 4px solid #667eea;
             padding: 15px;
+            margin: 15px 0;
             border-radius: 8px;
-            margin-bottom: 15px;
         }
         .accounting-box {
             background: #e8f4f8;
@@ -201,6 +216,55 @@ foreach($recent as $r) {
             padding: 15px;
             margin: 15px 0;
             border-radius: 8px;
+        }
+        .method-toggle {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+        .method-btn {
+            flex: 1;
+            padding: 10px;
+            text-align: center;
+            cursor: pointer;
+            border-radius: 8px;
+            transition: all 0.3s;
+        }
+        .method-btn.active {
+            background: #28a745;
+            color: white;
+        }
+        .method-btn.inactive {
+            background: #e9ecef;
+            color: #6c757d;
+        }
+        .calculation-section {
+            display: none;
+        }
+        .calculation-section.active {
+            display: block;
+        }
+        .tank-info {
+            background: #fff3cd;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 15px;
+        }
+        .current-dip-card {
+            background: #d4edda;
+            border-left: 4px solid #28a745;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 15px;
+        }
+        .info-text {
+            font-size: 14px;
+            margin-top: 5px;
+            color: #666;
+        }
+        .warning-text {
+            color: #dc3545;
+            font-size: 12px;
         }
         .pipeline-note {
             background: #cce5ff;
@@ -210,14 +274,6 @@ foreach($recent as $r) {
             margin-bottom: 15px;
         }
         .pipeline-note i { color: #0d6efd; }
-        .manual-entry-box {
-            background: #d4edda;
-            border-left: 4px solid #28a745;
-            padding: 15px;
-            border-radius: 8px;
-            margin-bottom: 15px;
-        }
-        .manual-entry-box i { color: #28a745; }
     </style>
 </head>
 <body>
@@ -299,13 +355,7 @@ foreach($recent as $r) {
                         </div>
                         <div class="card-body">
                            
-                            <!-- Manual Entry Notice -->
-                            <div class="manual-entry-box">
-                                <i class="fas fa-hand-holding"></i>
-                                <strong>Manual Entry Only:</strong> 
-                                Please enter the physical stock measured manually (from dip stick readings, tank gauges, or physical inspection).
-                                <br><small class="text-muted">No automatic formulas are used. System will calculate variance based on your manual input.</small>
-                            </div>
+                       
                             
                             <form method="POST" id="adjustmentForm">
                                 <div class="mb-3">
@@ -314,31 +364,91 @@ foreach($recent as $r) {
                                         <option value="">-- Select Tank --</option>
                                         <?php foreach($tanks as $tank): ?>
                                             <option value="<?php echo $tank['id']; ?>" 
+                                                    data-calibration="<?php echo $tank['calibration_factor']; ?>"
                                                     data-stock="<?php echo $tank['current_stock_liters']; ?>"
                                                     data-purchase-rate="<?php echo $tank['purchase_rate']; ?>"
+                                                    data-capacity="<?php echo $tank['capacity_liters']; ?>"
                                                     data-tank-name="<?php echo $tank['tank_name']; ?>">
                                                 <?php echo $tank['tank_name']; ?> - <?php echo $tank['product_name']; ?> 
-                                                (Current: <?php echo number_format($tank['current_stock_liters'], 2); ?> L)
+                                                (Current: <?php echo number_format($tank['current_stock_liters'], 2); ?> L | 
+                                                Calibration: <?php echo $tank['calibration_factor']; ?> L/cm)
                                             </option>
                                         <?php endforeach; ?>
                                     </select>
+                                </div>
+                                
+                                <!-- Current Dip Reading Card -->
+                                <div id="currentDipCard" class="current-dip-card" style="display:none;">
+                                    <div class="d-flex justify-content-between align-items-center">
+                                        <div>
+                                            <i class="fas fa-ruler fa-2x text-success"></i>
+                                        </div>
+                                        <div class="text-center">
+                                            <h4 id="currentDipReading" class="mb-0">0.00</h4>
+                                            <small>Current Dip Reading (cm)</small>
+                                        </div>
+                                        <div class="text-center">
+                                            <h4 id="currentStockDisplay" class="mb-0">0</h4>
+                                            <small>Current Stock (L)</small>
+                                        </div>
+                                        <div>
+                                            <span class="badge bg-success" id="percentageFull">0%</span>
+                                        </div>
+                                    </div>
+                                    <div class="progress mt-2" style="height: 8px;">
+                                        <div id="stockProgress" class="progress-bar bg-success" style="width: 0%"></div>
+                                    </div>
+                                    <div class="info-text text-center mt-2">
+                                        <small><i class="fas fa-info-circle"></i> Based on current system stock, dip stick should read <strong id="expectedDipReading">0.00</strong> cm</small>
+                                    </div>
                                 </div>
                                 
                                 <!-- Tank Info Display -->
                                 <div id="tankInfo" class="tank-info" style="display:none;">
                                     <div class="row">
                                         <div class="col-6"><strong><i class="fas fa-warehouse"></i> System Stock:</strong> <br><span id="display_system_stock">0</span> L</div>
-                                        <div class="col-6"><strong><i class="fas fa-dollar-sign"></i> Purchase Rate:</strong> <br><?php echo $currency; ?> <span id="display_purchase_rate">0</span>/L</div>
+                                        <div class="col-6"><strong><i class="fas fa-chart-line"></i> Calibration Factor:</strong> <br><span id="display_calibration">0</span> L/cm</div>
+                                        <div class="col-6 mt-2"><strong><i class="fas fa-dollar-sign"></i> Purchase Rate:</strong> <br><?php echo $currency; ?> <span id="display_purchase_rate">0</span>/L</div>
+                                        <div class="col-6 mt-2"><strong><i class="fas fa-tachometer-alt"></i> Tank Capacity:</strong> <br><span id="display_capacity">0</span> L</div>
                                     </div>
                                 </div>
                                 
-                                <div class="mb-3">
-                                    <label>Physical Stock (Liters) *</label>
-                                    <input type="number" name="physical_stock" id="physical_stock" class="form-control" step="0.01" placeholder="Enter measured physical stock from dip stick / inspection" required>
-                                    <small class="text-muted">
-                                        <i class="fas fa-hand-holding"></i> 
-                                        Enter the actual stock measured from dip stick reading or manual inspection
-                                    </small>
+                                <!-- Calculation Method Toggle -->
+                                <div class="method-toggle">
+                                    <div class="method-btn active" data-method="manual" onclick="toggleMethod('manual')">
+                                        <i class="fas fa-edit"></i> Manual Entry
+                                    </div>
+                                    <div class="method-btn inactive" data-method="dip_stick" onclick="toggleMethod('dip_stick')">
+                                        <i class="fas fa-ruler"></i> Dip Stick Method
+                                    </div>
+                                </div>
+                                
+                                <input type="hidden" name="calculation_method" id="calculation_method" value="manual">
+                                
+                                <!-- Manual Entry Section -->
+                                <div id="manual_section" class="calculation-section active">
+                                    <div class="mb-3">
+                                        <label>Physical Stock (Liters) *</label>
+                                        <input type="number" name="physical_stock" id="physical_stock" class="form-control" step="0.01" placeholder="Enter measured physical stock" value="">
+                                        <small class="text-muted">Enter the actual measured stock in liters</small>
+                                    </div>
+                                </div>
+                                
+                                <!-- Dip Stick Method Section -->
+                                <div id="dip_stick_section" class="calculation-section">
+                                    <div class="mb-3">
+                                        <label>New Dip Stick Reading (cm) *</label>
+                                        <input type="number" name="dip_reading" id="dip_reading" class="form-control" step="0.01" placeholder="Enter current dip reading in cm">
+                                        <small class="text-muted">
+                                            <i class="fas fa-info-circle"></i> 
+                                            Expected reading based on system stock: <strong id="expectedDipLabel">0.00</strong> cm
+                                        </small>
+                                    </div>
+                                    <div class="mb-3">
+                                        <label>Calculated Physical Stock (Liters)</label>
+                                        <input type="text" id="calculated_stock" class="form-control" readonly>
+                                    </div>
+                                    <input type="hidden" name="dip_physical_stock" id="dip_physical_stock" value="0">
                                 </div>
                                 
                                 <div class="row">
@@ -368,24 +478,32 @@ foreach($recent as $r) {
                                         <option value="wastage">Wastage</option>
                                         <option value="theft">Theft</option>
                                         <option value="error">Measurement Error</option>
-                                        <option value="other">Other</option>
                                     </select>
                                 </div>
                                 
                                 <div class="mb-3">
                                     <label>Reason Details *</label>
-                                    <textarea name="reason" class="form-control" rows="3" placeholder="Describe why adjustment is needed..." required></textarea>
+                                    <textarea name="reason" class="form-control" rows="2" placeholder="Describe why adjustment is needed..." required></textarea>
                                 </div>
                                 
                                 <button type="submit" name="submit_adjustment" class="btn btn-primary w-100">
                                     <i class="fas fa-save"></i> Submit Adjustment
                                 </button>
                             </form>
+
+                             <!-- Dip Stick Formula Box -->
+                            <div class="formula-box">
+                                <h6><i class="fas fa-calculator"></i> Dip Stick Calculation Formula</h6>
+                                <div class="formula">
+                                    <strong>Volume (Liters) = Dip Reading (cm) × Calibration Factor (L/cm)</strong>
+                                </div>
+                                <small>Example: 50 cm × 5.2345 L/cm = 261.73 Liters</small>
+                            </div>
                             
                             <!-- Accounting Treatment Box -->
-                            <div class="accounting-box mt-3">
-                                <h6><i class="fas fa-book"></i> Accounting Treatment</h6>
-                                <div style="background:#fff; text-align:left; padding:10px; border-radius:5px;">
+                            <div class="accounting-box">
+                                <h6><i class="fas fa-book"></i> Correct Accounting Treatment</h6>
+                                <div class="formula" style="background:#fff; text-align:left;">
                                     <strong>For Loss (System Stock > Physical Stock):</strong><br>
                                     Dr. Stock Loss Expense (Account 5100)    xxx<br>
                                     &nbsp;&nbsp;&nbsp;&nbsp;Cr. Fuel Inventory (Account 1200)    xxx<br><br>
@@ -395,6 +513,7 @@ foreach($recent as $r) {
                                 </div>
                                 <small>Amount = |Variance| (Liters) × Purchase Rate (<?php echo $currency; ?>/L)</small>
                             </div>
+                            
                         </div>
                     </div>
                 </div>
@@ -507,39 +626,131 @@ foreach($recent as $r) {
             });
         });
         
+        // Toggle between manual and dip stick method
+        function toggleMethod(method) {
+            document.getElementById('calculation_method').value = method;
+            
+            document.querySelectorAll('.method-btn').forEach(btn => {
+                btn.classList.remove('active');
+                btn.classList.add('inactive');
+            });
+            document.querySelector(`.method-btn[data-method="${method}"]`).classList.add('active');
+            
+            if(method === 'manual') {
+                document.getElementById('manual_section').classList.add('active');
+                document.getElementById('dip_stick_section').classList.remove('active');
+                document.getElementById('dip_reading').removeAttribute('required');
+                document.getElementById('physical_stock').setAttribute('required', 'required');
+            } else {
+                document.getElementById('manual_section').classList.remove('active');
+                document.getElementById('dip_stick_section').classList.add('active');
+                document.getElementById('physical_stock').removeAttribute('required');
+                document.getElementById('dip_reading').setAttribute('required', 'required');
+            }
+            
+            calculateVariance();
+        }
+        
+        // Calculate expected dip reading from stock
+        function calculateExpectedDipReading(stock, calibrationFactor) {
+            if(calibrationFactor > 0 && stock > 0) {
+                return stock / calibrationFactor;
+            }
+            return 0;
+        }
+        
         // Tank selection change
         document.getElementById('tank_id').addEventListener('change', function() {
             let option = this.options[this.selectedIndex];
             if(!option.value) {
                 document.getElementById('tankInfo').style.display = 'none';
+                document.getElementById('currentDipCard').style.display = 'none';
                 document.getElementById('system_stock_display').value = '';
                 return;
             }
             
             let systemStock = parseFloat(option.getAttribute('data-stock')) || 0;
+            let calibration = parseFloat(option.getAttribute('data-calibration')) || 1;
             let purchaseRate = parseFloat(option.getAttribute('data-purchase-rate')) || 0;
+            let capacity = parseFloat(option.getAttribute('data-capacity')) || 0;
+            
+            // Calculate expected dip reading from current stock
+            let expectedDipReading = calculateExpectedDipReading(systemStock, calibration);
+            let percentageFull = capacity > 0 ? (systemStock / capacity) * 100 : 0;
+            
+            // Update Current Dip Card
+            document.getElementById('currentDipCard').style.display = 'block';
+            document.getElementById('currentDipReading').innerHTML = expectedDipReading.toFixed(2);
+            document.getElementById('currentStockDisplay').innerHTML = systemStock.toFixed(0);
+            document.getElementById('percentageFull').innerHTML = percentageFull.toFixed(1) + '%';
+            document.getElementById('expectedDipReading').innerHTML = expectedDipReading.toFixed(2);
+            
+            // Update progress bar
+            let progressBar = document.getElementById('stockProgress');
+            progressBar.style.width = Math.min(percentageFull, 100) + '%';
+            if(percentageFull < 20) {
+                progressBar.className = 'progress-bar bg-danger';
+            } else if(percentageFull < 50) {
+                progressBar.className = 'progress-bar bg-warning';
+            } else {
+                progressBar.className = 'progress-bar bg-success';
+            }
+            
+            // Update expected dip label in dip stick section
+            document.getElementById('expectedDipLabel').innerHTML = expectedDipReading.toFixed(2);
             
             // Update Tank Info
             document.getElementById('tankInfo').style.display = 'block';
             document.getElementById('display_system_stock').innerHTML = systemStock.toFixed(2);
+            document.getElementById('display_calibration').innerHTML = calibration.toFixed(4);
             document.getElementById('display_purchase_rate').innerHTML = purchaseRate.toFixed(2);
+            document.getElementById('display_capacity').innerHTML = capacity.toFixed(0);
             
             document.getElementById('system_stock_display').value = systemStock.toFixed(2);
             
-            // Reset physical stock input
-            document.getElementById('physical_stock').value = '';
+            // Reset inputs
+            if(document.getElementById('calculation_method').value === 'manual') {
+                document.getElementById('physical_stock').value = '';
+            } else {
+                document.getElementById('dip_reading').value = '';
+                document.getElementById('calculated_stock').value = '';
+            }
             
             calculateVariance();
         });
         
-        // Physical stock input
+        // Manual physical stock input
         document.getElementById('physical_stock').addEventListener('input', function() {
             calculateVariance();
         });
         
+        // Dip stick input
+        document.getElementById('dip_reading').addEventListener('input', function() {
+            let tankSelect = document.getElementById('tank_id');
+            if(tankSelect.selectedIndex > 0) {
+                let option = tankSelect.options[tankSelect.selectedIndex];
+                let calibration = parseFloat(option.getAttribute('data-calibration')) || 1;
+                let dipReading = parseFloat(this.value) || 0;
+                let calculatedStock = dipReading * calibration;
+                
+                document.getElementById('calculated_stock').value = calculatedStock.toFixed(2);
+                document.getElementById('dip_physical_stock').value = calculatedStock;
+                
+                calculateVariance();
+            }
+        });
+        
         function calculateVariance() {
             let systemStock = parseFloat(document.getElementById('system_stock_display').value) || 0;
-            let physicalStock = parseFloat(document.getElementById('physical_stock').value) || 0;
+            let physicalStock = 0;
+            let method = document.getElementById('calculation_method').value;
+            
+            if(method === 'manual') {
+                let physicalInput = document.getElementById('physical_stock').value;
+                physicalStock = parseFloat(physicalInput) || 0;
+            } else {
+                physicalStock = parseFloat(document.getElementById('calculated_stock').value) || 0;
+            }
             
             let variance = systemStock - physicalStock;
             let purchaseRate = 0;
@@ -578,25 +789,46 @@ foreach($recent as $r) {
         // Form validation
         document.getElementById('adjustmentForm').addEventListener('submit', function(e) {
             let tank = document.getElementById('tank_id').value;
+            let method = document.getElementById('calculation_method').value;
+            
             if(!tank) {
                 e.preventDefault();
                 alert('❌ Please select a tank');
                 return false;
             }
             
-            let physicalInput = document.getElementById('physical_stock').value;
-            let physicalStock = parseFloat(physicalInput);
+            let physicalStock = 0;
             
-            if(physicalInput === '' || isNaN(physicalStock)) {
-                e.preventDefault();
-                alert('❌ Please enter physical stock amount measured from dip stick / manual inspection');
-                return false;
-            }
-            
-            if(physicalStock < 0) {
-                e.preventDefault();
-                alert('❌ Physical stock cannot be negative. Please enter a valid amount.');
-                return false;
+            if(method === 'manual') {
+                let physicalInput = document.getElementById('physical_stock').value;
+                physicalStock = parseFloat(physicalInput);
+                
+                if(isNaN(physicalStock) || physicalInput === '') {
+                    e.preventDefault();
+                    alert('❌ Please enter physical stock amount');
+                    return false;
+                }
+                
+                if(physicalStock <= 0) {
+                    e.preventDefault();
+                    alert('❌ Physical stock cannot be zero or negative. Please enter a valid amount.');
+                    return false;
+                }
+            } else {
+                let dipReading = parseFloat(document.getElementById('dip_reading').value);
+                if(isNaN(dipReading) || dipReading <= 0) {
+                    e.preventDefault();
+                    alert('❌ Please enter a valid dip stick reading in centimeters');
+                    return false;
+                }
+                
+                physicalStock = parseFloat(document.getElementById('calculated_stock').value);
+                if(isNaN(physicalStock) || physicalStock <= 0) {
+                    e.preventDefault();
+                    alert('❌ Calculated physical stock is zero or invalid. Please check your dip reading.');
+                    return false;
+                }
+                document.getElementById('dip_physical_stock').value = physicalStock;
             }
             
             let variance = parseFloat(document.getElementById('variance_display').value) || 0;

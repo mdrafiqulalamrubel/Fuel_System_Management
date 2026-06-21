@@ -233,6 +233,11 @@ $user_role = $user['role'] ?? 'guest';
                     <i class="fas fa-chart-bar"></i> <span>Shift Report</span>
                 </a>
             </li>
+            <li class="nav-item <?php echo $current_page == 'shift_report.php' ? 'active' : ''; ?>">
+                <a class="nav-link" href="shift_closing_report.php">
+                    <i class="fas fa-chart-bar"></i> <span>Shift Closing Report</span>
+                </a>
+            </li>
         </div>
         
         <!-- ============================================= -->

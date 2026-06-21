@@ -368,6 +368,24 @@ $active_tab = isset($_GET['tab']) ? $_GET['tab'] : 'tanks';
         .tab-content {
             padding-top: 20px;
         }
+
+        /* Fix Tab Visibility */
+        .nav-tabs .nav-link {
+            color: #495057 !important;
+            font-weight: 600;
+        }
+
+        .nav-tabs .nav-link.active {
+            color: #0d6efd !important;
+            font-weight: 700;
+            background: #fff !important;
+            border-bottom: 3px solid #0d6efd;
+        }
+
+        .nav-tabs .nav-link:not(.active) {
+            color: #6c757d !important;
+            background: #e9ecef;
+        }
     </style>
 </head>
 <body>

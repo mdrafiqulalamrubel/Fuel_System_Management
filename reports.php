@@ -16,74 +16,6 @@ $stmt = $pdo->prepare("SELECT SUM(total_amount) as today_cng FROM gas_sales WHER
 $stmt->execute([$today]);
 $today_cng = $stmt->fetch()['today_cng'] ?? 0;
 
-// =============================================
-// FIXED: Get all sales data with same number of columns
-// =============================================
-$all_sales = $pdo->query("
-    SELECT 
-        s.id,
-        s.invoice_no,
-        s.sale_date,
-        s.product_id,
-        s.nozzle_id,
-        s.customer_name,
-        s.quantity_liters,
-        s.unit_price,
-        s.total_amount,
-        s.received_amount,
-        s.change_amount,
-        s.sale_type,
-        s.vat_amount,
-        s.tax_amount,
-        s.subtotal,
-        s.advance_used,
-        s.advance_payment_id,
-        s.operator_id,
-        p.product_name,
-        n.nozzle_name,
-        'liquid' as sale_type_label,
-        'L' as unit_label,
-        NULL as opening_meter,
-        NULL as closing_meter,
-        NULL as meter_readings
-    FROM sales s
-    JOIN fuel_products p ON s.product_id = p.id
-    JOIN nozzles n ON s.nozzle_id = n.id
-    UNION ALL
-    SELECT 
-        gs.id,
-        gs.invoice_no,
-        gs.sale_date,
-        n.product_id,
-        gs.nozzle_id,
-        gs.customer_name,
-        gs.quantity_liters,
-        gs.unit_price,
-        gs.total_amount,
-        gs.received_amount,
-        gs.change_amount,
-        gs.sale_type,
-        NULL as vat_amount,
-        NULL as tax_amount,
-        NULL as subtotal,
-        NULL as advance_used,
-        NULL as advance_payment_id,
-        gs.operator_id,
-        p.product_name,
-        n.nozzle_name,
-        'cng' as sale_type_label,
-        'm³' as unit_label,
-        gs.opening_meter,
-        gs.closing_meter,
-        'Yes' as meter_readings
-    FROM gas_sales gs
-    JOIN nozzles n ON gs.nozzle_id = n.id
-    JOIN fuel_products p ON n.product_id = p.id
-    WHERE gs.status = 'completed'
-    ORDER BY sale_date DESC
-    LIMIT 100
-")->fetchAll();
-
 // Get all products for filter
 $products = $pdo->query("SELECT id, product_name FROM fuel_products WHERE is_active = 1 ORDER BY product_name")->fetchAll();
 
@@ -92,8 +24,9 @@ $nozzles = $pdo->query("SELECT id, nozzle_name FROM nozzles WHERE is_active = 1 
 
 $settings = $pdo->query("SELECT setting_key, setting_value FROM system_settings")->fetchAll(PDO::FETCH_KEY_PAIR);
 $currency = $settings['currency_symbol'] ?? 'BDT';
+$company_name = $settings['company_name'] ?? 'FF Enterprise';
 
-// Calculate total stock for display
+// Calculate total stock
 $total_stock = $pdo->query("SELECT SUM(current_stock_liters) as total FROM tanks")->fetch()['total'] ?? 0;
 ?>
 <!DOCTYPE html>
@@ -107,6 +40,9 @@ $total_stock = $pdo->query("SELECT SUM(current_stock_liters) as total FROM tanks
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
+        /* ============================================= */
+        /* GENERAL STYLES */
+        /* ============================================= */
         .stats-card {
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             color: white;
@@ -117,6 +53,9 @@ $total_stock = $pdo->query("SELECT SUM(current_stock_liters) as total FROM tanks
         }
         .stats-card:hover { transform: translateY(-5px); }
         .stats-card i { font-size: 40px; opacity: 0.5; float: right; }
+        .stats-card h3 { font-size: 28px; margin-bottom: 5px; }
+        .stats-card p { margin: 0; opacity: 0.8; }
+        .stats-card small { opacity: 0.7; font-size: 12px; }
         
         .nav-tabs {
             border-bottom: 2px solid #e0e0e0;
@@ -152,45 +91,13 @@ $total_stock = $pdo->query("SELECT SUM(current_stock_liters) as total FROM tanks
             transition: margin-left 0.3s;
         }
         
-        .clickable-row {
-            cursor: pointer;
-            transition: background-color 0.2s;
-        }
+        .clickable-row { cursor: pointer; transition: background-color 0.2s; }
         .clickable-row:hover { background-color: #e8f0fe !important; }
         
         .badge-cng { background: #17a2b8; color: white; }
         .badge-liquid { background: #28a745; color: white; }
         .badge-lpg { background: #ffc107; color: #856404; }
         
-        .drill-down-row {
-            background-color: #f8f9fa;
-        }
-        .drill-down-row td {
-            padding: 5px 10px !important;
-        }
-        
-        @media (max-width: 768px) {
-            .main-content { margin-left: 0; }
-        }
-        
-        @media print {
-            .sidebar, .no-print, .stats-card, .card-header .btn, 
-            .dataTables_length, .dataTables_filter, .dataTables_paginate,
-            .nav-tabs, .btn, form { display: none !important; }
-        }
-        
-        .invoice-link {
-            color: #007bff;
-            text-decoration: none;
-            cursor: pointer;
-        }
-        .invoice-link:hover {
-            text-decoration: underline;
-        }
-        .btn-reprint {
-            padding: 2px 8px;
-            font-size: 12px;
-        }
         .summary-card {
             background: #f8f9fa;
             border-radius: 10px;
@@ -202,6 +109,296 @@ $total_stock = $pdo->query("SELECT SUM(current_stock_liters) as total FROM tanks
         .summary-card.cash-sales { border-left-color: #17a2b8; }
         .summary-card.credit-sales { border-left-color: #ffc107; }
         .summary-card.cng-sales { border-left-color: #6f42c1; }
+        .summary-card h6 { font-size: 12px; color: #666; margin-bottom: 2px; }
+        .summary-card h4 { font-size: 18px; font-weight: bold; margin: 0; }
+        .summary-card small { font-size: 10px; color: #888; }
+        
+        .invoice-link {
+            color: #007bff;
+            text-decoration: none;
+            cursor: pointer;
+        }
+        .invoice-link:hover { text-decoration: underline; }
+        
+        .btn-reprint {
+            padding: 2px 8px;
+            font-size: 12px;
+        }
+        
+        .text-purple { color: #6f42c1; }
+        
+        /* ============================================= */
+        /* PLAIN PAPER PRINT STYLES */
+        /* ============================================= */
+        @media print {
+            /* Hide sidebar and buttons */
+            .sidebar, .no-print, .btn, .dataTables_length, .dataTables_filter, 
+            .dataTables_paginate, form, .card-header .btn, .nav-tabs,
+            .stats-card i, .clickable-row:hover {
+                display: none !important;
+            }
+            
+            /* Landscape for wide reports */
+            @page {
+                size: landscape;
+                margin: 8mm 6mm;
+            }
+            
+            /* Main content full width */
+            .main-content {
+                margin: 0 !important;
+                padding: 5px !important;
+                width: 100% !important;
+                max-width: 100% !important;
+            }
+            
+            .container-fluid {
+                padding: 0 !important;
+                max-width: 100% !important;
+            }
+            
+            /* Show print header */
+            .print-header {
+                display: block !important;
+                text-align: center;
+                margin-bottom: 15px;
+                border-bottom: 2px solid #000;
+                padding-bottom: 10px;
+            }
+            
+            .print-header h2 {
+                font-size: 18px;
+                font-weight: bold;
+                margin-bottom: 2px;
+            }
+            
+            .print-header h4 {
+                font-size: 14px;
+                margin-bottom: 2px;
+            }
+            
+            .print-header p {
+                font-size: 11px;
+                margin-bottom: 2px;
+            }
+            
+            /* Card styles - plain border */
+            .card {
+                border: 1px solid #000 !important;
+                margin-bottom: 10px !important;
+                border-radius: 0 !important;
+                box-shadow: none !important;
+                background: #fff !important;
+            }
+            
+            .card-header {
+                background: #f8f9fa !important;
+                color: #000 !important;
+                border-bottom: 1px solid #000 !important;
+                padding: 5px 10px !important;
+                font-weight: bold;
+            }
+            
+            .card-header h5, .card-header h6 {
+                font-size: 12px !important;
+                margin: 0 !important;
+                color: #000 !important;
+            }
+            
+            .card-body {
+                padding: 8px 10px !important;
+                background: #fff !important;
+            }
+            
+            /* Table styles - plain black and white */
+            .table {
+                border-collapse: collapse !important;
+                width: 100% !important;
+                font-size: 9px !important;
+                color: #000 !important;
+            }
+            
+            .table th, .table td {
+                border: 1px solid #000 !important;
+                padding: 3px 5px !important;
+                background: #fff !important;
+                color: #000 !important;
+            }
+            
+            .table th {
+                background: #f8f9fa !important;
+                font-weight: bold !important;
+            }
+            
+            .table thead th {
+                background: #f8f9fa !important;
+                border-bottom: 2px solid #000 !important;
+            }
+            
+            .table tfoot th, .table tfoot td {
+                background: #f8f9fa !important;
+                border-top: 2px solid #000 !important;
+                font-weight: bold !important;
+            }
+            
+            .table-striped tbody tr:nth-of-type(odd) {
+                background: #fff !important;
+            }
+            
+            .table-striped tbody tr:nth-of-type(even) {
+                background: #f9f9f9 !important;
+            }
+            
+            /* Remove all background colors and gradients */
+            .bg-primary, .bg-success, .bg-info, .bg-warning, .bg-danger, .bg-dark,
+            .bg-secondary, .bg-light, .bg-white {
+                background: #fff !important;
+                color: #000 !important;
+            }
+            
+            .text-white, .text-white-50, .text-white-50 * {
+                color: #000 !important;
+            }
+            
+            .text-success, .text-warning, .text-info, .text-danger, .text-primary, .text-purple {
+                color: #000 !important;
+            }
+            
+            /* Remove alerts background */
+            .alert {
+                border: 1px solid #000 !important;
+                background: #fff !important;
+                color: #000 !important;
+                padding: 5px 10px !important;
+            }
+            
+            .alert-success, .alert-info, .alert-warning, .alert-danger, .alert-secondary {
+                background: #fff !important;
+                border: 1px solid #000 !important;
+                color: #000 !important;
+            }
+            
+            /* Stats cards - plain */
+            .stats-card {
+                background: #fff !important;
+                border: 1px solid #000 !important;
+                color: #000 !important;
+                box-shadow: none !important;
+            }
+            
+            .stats-card i {
+                display: none !important;
+            }
+            
+            /* Summary cards - plain */
+            .summary-card {
+                background: #fff !important;
+                border: 1px solid #000 !important;
+                border-left: 3px solid #000 !important;
+            }
+            
+            .summary-card.total-sales { border-left-color: #000 !important; }
+            .summary-card.cash-sales { border-left-color: #000 !important; }
+            .summary-card.credit-sales { border-left-color: #000 !important; }
+            .summary-card.cng-sales { border-left-color: #000 !important; }
+            
+            /* Badges - plain */
+            .badge {
+                border: 1px solid #000 !important;
+                background: #fff !important;
+                color: #000 !important;
+                padding: 1px 5px !important;
+                font-size: 8px !important;
+            }
+            .badge-cng, .badge-liquid, .badge-lpg {
+                background: #fff !important;
+                color: #000 !important;
+                border: 1px solid #000 !important;
+            }
+            
+            /* Remove hover effects */
+            .clickable-row:hover {
+                background-color: #fff !important;
+            }
+            
+            /* Table responsive - allow horizontal scroll in print */
+            .table-responsive {
+                overflow: visible !important;
+                -webkit-overflow-scrolling: touch !important;
+            }
+            
+            /* Row and column adjustments */
+            .row {
+                margin: 0 !important;
+            }
+            
+            .col-md-3, .col-md-4, .col-md-6, .col-md-12, .col-md-2 {
+                padding: 0 3px !important;
+            }
+            
+            /* Hide scrollbars */
+            ::-webkit-scrollbar {
+                display: none;
+            }
+            
+            /* Footer note */
+            .footer-note {
+                border-top: 1px solid #000 !important;
+                margin-top: 10px !important;
+                padding-top: 5px !important;
+                font-size: 8px !important;
+                text-align: center !important;
+            }
+        }
+        
+        /* Print header hidden by default */
+        .print-header {
+            display: none;
+        }
+        
+        @media (max-width: 768px) {
+            .main-content { margin-left: 0; }
+        }
+        
+        /* Plain tab specific styles */
+        .plain-table th, .plain-table td {
+            border: 1px solid #000 !important;
+            padding: 5px 8px !important;
+            font-size: 11px !important;
+        }
+        .plain-table thead th {
+            background: #f8f9fa !important;
+            border: 1px solid #000 !important;
+            font-weight: bold !important;
+        }
+        .plain-table tbody td {
+            border: 1px solid #000 !important;
+        }
+        .plain-table tfoot td {
+            background: #f8f9fa !important;
+            border: 1px solid #000 !important;
+            font-weight: bold !important;
+        }
+        .plain-summary {
+            border: 1px solid #000 !important;
+            border-left: 3px solid #000 !important;
+            padding: 12px 15px !important;
+            background: #fff !important;
+        }
+        .plain-summary h6 {
+            font-size: 12px !important;
+            color: #555 !important;
+            margin-bottom: 2px !important;
+        }
+        .plain-summary h4 {
+            font-size: 18px !important;
+            font-weight: bold !important;
+            margin: 0 !important;
+        }
+        .plain-summary small {
+            font-size: 10px !important;
+            color: #666 !important;
+        }
     </style>
 </head>
 <body>
@@ -209,14 +406,34 @@ $total_stock = $pdo->query("SELECT SUM(current_stock_liters) as total FROM tanks
     
     <div class="main-content">
         <div class="container-fluid">
-            <div class="d-flex justify-content-between align-items-center mb-4">
-                <h2><i class="fas fa-chart-bar"></i> Reports Dashboard</h2>
-                <a href="dashboard.php" class="btn btn-secondary">
-                    <i class="fas fa-arrow-left"></i> Back to Dashboard
-                </a>
+            <!-- ============================================= -->
+            <!-- PRINT HEADER -->
+            <!-- ============================================= -->
+            <div class="print-header">
+                <h2><?php echo htmlspecialchars($company_name); ?></h2>
+                <h4>Reports Dashboard</h4>
+                <p>Generated on: <?php echo date('d/m/Y h:i:s A'); ?></p>
+                <hr>
             </div>
             
-            <!-- Statistics Cards -->
+            <!-- ============================================= -->
+            <!-- HEADER -->
+            <!-- ============================================= -->
+            <div class="d-flex justify-content-between align-items-center mb-4">
+                <h2><i class="fas fa-chart-bar"></i> Reports Dashboard</h2>
+                <div class="no-print">
+                    <button onclick="window.print()" class="btn btn-primary">
+                        <i class="fas fa-print"></i> Print Report (Landscape)
+                    </button>
+                    <a href="dashboard.php" class="btn btn-secondary">
+                        <i class="fas fa-arrow-left"></i> Back to Dashboard
+                    </a>
+                </div>
+            </div>
+            
+            <!-- ============================================= -->
+            <!-- STATISTICS CARDS -->
+            <!-- ============================================= -->
             <div class="row">
                 <div class="col-md-3">
                     <div class="stats-card">
@@ -249,7 +466,9 @@ $total_stock = $pdo->query("SELECT SUM(current_stock_liters) as total FROM tanks
                 </div>
             </div>
             
-            <!-- Tabs -->
+            <!-- ============================================= -->
+            <!-- TABS -->
+            <!-- ============================================= -->
             <ul class="nav nav-tabs">
                 <li class="nav-item">
                     <a class="nav-link <?php echo $active_tab == 'sales' ? 'active' : ''; ?>" href="?tab=sales">
@@ -281,9 +500,16 @@ $total_stock = $pdo->query("SELECT SUM(current_stock_liters) as total FROM tanks
                         <i class="fas fa-chart-pie"></i> Financial
                     </a>
                 </li>
+                <li class="nav-item">
+                    <a class="nav-link <?php echo $active_tab == 'plain' ? 'active' : ''; ?>" href="?tab=plain">
+                        <i class="fas fa-print"></i> Plain Print
+                    </a>
+                </li>
             </ul>
             
-            <!-- ==================== DATE RANGE SALES REPORT TAB ==================== -->
+            <!-- ============================================= -->
+            <!-- DATE RANGE SALES REPORT TAB -->
+            <!-- ============================================= -->
             <?php if($active_tab == 'sales'): ?>
             <div class="row mt-3">
                 <div class="col-md-12">
@@ -430,32 +656,32 @@ $total_stock = $pdo->query("SELECT SUM(current_stock_liters) as total FROM tanks
                                 <div class="col-md-3">
                                     <div class="summary-card total-sales">
                                         <h6>Total Sales</h6>
-                                        <h4 class="text-success"><?php echo $currency; ?> <?php echo number_format($total_amount, 2); ?></h4>
+                                        <h4><?php echo $currency; ?> <?php echo number_format($total_amount, 2); ?></h4>
                                         <small><?php echo $total_transactions; ?> Transactions</small>
                                     </div>
                                 </div>
                                 <div class="col-md-3">
                                     <div class="summary-card cash-sales">
                                         <h6>Cash Sales</h6>
-                                        <h4 class="text-info"><?php echo $currency; ?> <?php echo number_format($total_cash, 2); ?></h4>
+                                        <h4><?php echo $currency; ?> <?php echo number_format($total_cash, 2); ?></h4>
                                     </div>
                                 </div>
                                 <div class="col-md-3">
                                     <div class="summary-card credit-sales">
                                         <h6>Credit Sales</h6>
-                                        <h4 class="text-warning"><?php echo $currency; ?> <?php echo number_format($total_credit, 2); ?></h4>
+                                        <h4><?php echo $currency; ?> <?php echo number_format($total_credit, 2); ?></h4>
                                     </div>
                                 </div>
                                 <div class="col-md-3">
                                     <div class="summary-card cng-sales">
                                         <h6>CNG Sales</h6>
-                                        <h4 class="text-purple"><?php echo $currency; ?> <?php echo number_format($total_cng, 2); ?></h4>
+                                        <h4><?php echo $currency; ?> <?php echo number_format($total_cng, 2); ?></h4>
                                         <small>Liquid: <?php echo $currency; ?> <?php echo number_format($total_liquid, 2); ?></small>
                                     </div>
                                 </div>
                             </div>
                             
-                            <!-- Sales Table with Drill-down -->
+                            <!-- Sales Table -->
                             <div class="table-responsive">
                                 <table class="table table-bordered table-hover" id="salesReportTable">
                                     <thead class="table-dark">
@@ -470,7 +696,7 @@ $total_stock = $pdo->query("SELECT SUM(current_stock_liters) as total FROM tanks
                                             <th class="text-end">Unit Price</th>
                                             <th class="text-end">Total</th>
                                             <th>Sale Type</th>
-                                            <th>Action</th>
+                                            <th class="no-print">Action</th>
                                         </tr>
                                     </thead>
                                     <tbody>
@@ -505,7 +731,7 @@ $total_stock = $pdo->query("SELECT SUM(current_stock_liters) as total FROM tanks
                                                         <span class="badge bg-warning">Credit</span>
                                                     <?php endif; ?>
                                                 </td>
-                                                <td>
+                                                <td class="no-print">
                                                     <button class="btn btn-sm btn-info btn-reprint" onclick="reprintInvoice('<?php echo $invoice_no; ?>', '<?php echo $is_cng ? 'cng' : 'liquid'; ?>')">
                                                         <i class="fas fa-print"></i> Reprint
                                                     </button>
@@ -527,7 +753,7 @@ $total_stock = $pdo->query("SELECT SUM(current_stock_liters) as total FROM tanks
                                 </table>
                             </div>
                             
-                            <div class="mt-3">
+                            <div class="mt-3 no-print">
                                 <button onclick="window.print()" class="btn btn-primary">
                                     <i class="fas fa-print"></i> Print Report
                                 </button>
@@ -538,7 +764,9 @@ $total_stock = $pdo->query("SELECT SUM(current_stock_liters) as total FROM tanks
             </div>
             <?php endif; ?>
             
-            <!-- ==================== DAILY SALES REPORT TAB ==================== -->
+            <!-- ============================================= -->
+            <!-- DAILY SALES REPORT TAB -->
+            <!-- ============================================= -->
             <?php if($active_tab == 'daily'): ?>
             <div class="row mt-3">
                 <div class="col-md-12">
@@ -619,7 +847,7 @@ $total_stock = $pdo->query("SELECT SUM(current_stock_liters) as total FROM tanks
                                 <div class="col-md-6">
                                     <div class="summary-card total-sales">
                                         <h6>Total Sales for <?php echo date('d-m-Y', strtotime($report_date)); ?></h6>
-                                        <h4 class="text-success"><?php echo $currency; ?> <?php echo number_format($daily_total, 2); ?></h4>
+                                        <h4><?php echo $currency; ?> <?php echo number_format($daily_total, 2); ?></h4>
                                         <small><?php echo count($daily_sales); ?> Transactions</small>
                                     </div>
                                 </div>
@@ -639,7 +867,7 @@ $total_stock = $pdo->query("SELECT SUM(current_stock_liters) as total FROM tanks
                                             <th class="text-end">Quantity</th>
                                             <th class="text-end">Total</th>
                                             <th>Sale Type</th>
-                                            <th>Action</th>
+                                            <th class="no-print">Action</th>
                                         </tr>
                                     </thead>
                                     <tbody>
@@ -672,7 +900,7 @@ $total_stock = $pdo->query("SELECT SUM(current_stock_liters) as total FROM tanks
                                                         <span class="badge bg-warning">Credit</span>
                                                     <?php endif; ?>
                                                 </td>
-                                                <td>
+                                                <td class="no-print">
                                                     <button class="btn btn-sm btn-info btn-reprint" onclick="reprintInvoice('<?php echo $sale['invoice_no']; ?>', '<?php echo $is_cng ? 'cng' : 'liquid'; ?>')">
                                                         <i class="fas fa-print"></i>
                                                     </button>
@@ -699,7 +927,9 @@ $total_stock = $pdo->query("SELECT SUM(current_stock_liters) as total FROM tanks
             </div>
             <?php endif; ?>
             
-            <!-- ==================== NOZZLE-WISE REPORT TAB ==================== -->
+            <!-- ============================================= -->
+            <!-- NOZZLE-WISE REPORT TAB -->
+            <!-- ============================================= -->
             <?php if($active_tab == 'nozzle'): ?>
             <div class="row mt-3">
                 <div class="col-md-12">
@@ -842,7 +1072,9 @@ $total_stock = $pdo->query("SELECT SUM(current_stock_liters) as total FROM tanks
             </div>
             <?php endif; ?>
             
-            <!-- ==================== ITEM-WISE REPORT TAB ==================== -->
+            <!-- ============================================= -->
+            <!-- ITEM-WISE REPORT TAB -->
+            <!-- ============================================= -->
             <?php if($active_tab == 'item'): ?>
             <div class="row mt-3">
                 <div class="col-md-12">
@@ -988,7 +1220,9 @@ $total_stock = $pdo->query("SELECT SUM(current_stock_liters) as total FROM tanks
             </div>
             <?php endif; ?>
             
-            <!-- ==================== INVENTORY TAB ==================== -->
+            <!-- ============================================= -->
+            <!-- INVENTORY TAB -->
+            <!-- ============================================= -->
             <?php if($active_tab == 'inventory'): ?>
             <div class="row mt-3">
                 <div class="col-md-12">
@@ -1046,7 +1280,9 @@ $total_stock = $pdo->query("SELECT SUM(current_stock_liters) as total FROM tanks
             </div>
             <?php endif; ?>
             
-            <!-- ==================== FINANCIAL TAB ==================== -->
+            <!-- ============================================= -->
+            <!-- FINANCIAL TAB -->
+            <!-- ============================================= -->
             <?php if($active_tab == 'financial'): ?>
             <div class="row mt-3">
                 <div class="col-md-4">
@@ -1072,6 +1308,230 @@ $total_stock = $pdo->query("SELECT SUM(current_stock_liters) as total FROM tanks
                 </div>
             </div>
             <?php endif; ?>
+            
+            <!-- ============================================= -->
+            <!-- PLAIN PRINT TAB -->
+            <!-- ============================================= -->
+            <?php if($active_tab == 'plain'): ?>
+            <div class="row mt-3">
+                <div class="col-md-12">
+                    <div class="card">
+                        <div class="card-header" style="background:#f8f9fa; color:#000; border-bottom:2px solid #000;">
+                            <h5><i class="fas fa-print"></i> Plain Paper Report</h5>
+                            <small style="color:#555;">Clean, black & white report for printing on plain paper</small>
+                        </div>
+                        <div class="card-body">
+                            <!-- Date Range Filter -->
+                            <form method="GET" class="row g-3 mb-4 no-print">
+                                <input type="hidden" name="tab" value="plain">
+                                <div class="col-md-2">
+                                    <label>From Date</label>
+                                    <input type="date" name="p_from_date" class="form-control" value="<?php echo isset($_GET['p_from_date']) ? $_GET['p_from_date'] : date('Y-m-01'); ?>">
+                                </div>
+                                <div class="col-md-2">
+                                    <label>To Date</label>
+                                    <input type="date" name="p_to_date" class="form-control" value="<?php echo isset($_GET['p_to_date']) ? $_GET['p_to_date'] : date('Y-m-d'); ?>">
+                                </div>
+                                <div class="col-md-2">
+                                    <label>Product</label>
+                                    <select name="p_product_id" class="form-control">
+                                        <option value="">All Products</option>
+                                        <?php foreach($products as $p): ?>
+                                            <option value="<?php echo $p['id']; ?>" <?php echo (isset($_GET['p_product_id']) && $_GET['p_product_id'] == $p['id']) ? 'selected' : ''; ?>>
+                                                <?php echo $p['product_name']; ?>
+                                            </option>
+                                        <?php endforeach; ?>
+                                    </select>
+                                </div>
+                                <div class="col-md-2">
+                                    <label>Nozzle</label>
+                                    <select name="p_nozzle_id" class="form-control">
+                                        <option value="">All Nozzles</option>
+                                        <?php foreach($nozzles as $n): ?>
+                                            <option value="<?php echo $n['id']; ?>" <?php echo (isset($_GET['p_nozzle_id']) && $_GET['p_nozzle_id'] == $n['id']) ? 'selected' : ''; ?>>
+                                                <?php echo $n['nozzle_name']; ?>
+                                            </option>
+                                        <?php endforeach; ?>
+                                    </select>
+                                </div>
+                                <div class="col-md-2">
+                                    <label>Sale Type</label>
+                                    <select name="p_sale_type" class="form-control">
+                                        <option value="">All Types</option>
+                                        <option value="cash" <?php echo (isset($_GET['p_sale_type']) && $_GET['p_sale_type'] == 'cash') ? 'selected' : ''; ?>>Cash</option>
+                                        <option value="credit" <?php echo (isset($_GET['p_sale_type']) && $_GET['p_sale_type'] == 'credit') ? 'selected' : ''; ?>>Credit</option>
+                                    </select>
+                                </div>
+                                <div class="col-md-2">
+                                    <label>&nbsp;</label>
+                                    <button type="submit" class="btn btn-primary w-100" style="border:1px solid #000; background:#f8f9fa; color:#000;">
+                                        <i class="fas fa-search"></i> Generate
+                                    </button>
+                                </div>
+                            </form>
+
+                            <?php
+                            // Get data for plain report
+                            $p_from_date = isset($_GET['p_from_date']) ? $_GET['p_from_date'] : date('Y-m-01');
+                            $p_to_date = isset($_GET['p_to_date']) ? $_GET['p_to_date'] : date('Y-m-d');
+                            $p_product_id = isset($_GET['p_product_id']) ? $_GET['p_product_id'] : '';
+                            $p_nozzle_id = isset($_GET['p_nozzle_id']) ? $_GET['p_nozzle_id'] : '';
+                            $p_sale_type = isset($_GET['p_sale_type']) ? $_GET['p_sale_type'] : '';
+
+                            // Get Liquid Sales
+                            $sql_liquid = "SELECT s.*, p.product_name, n.nozzle_name, 'liquid' as sale_type_label, 'L' as unit_label 
+                                           FROM sales s 
+                                           JOIN fuel_products p ON s.product_id = p.id 
+                                           JOIN nozzles n ON s.nozzle_id = n.id 
+                                           WHERE DATE(s.sale_date) BETWEEN ? AND ?";
+                            $params = [$p_from_date, $p_to_date];
+                            
+                            if($p_product_id) { $sql_liquid .= " AND s.product_id = ?"; $params[] = $p_product_id; }
+                            if($p_nozzle_id) { $sql_liquid .= " AND s.nozzle_id = ?"; $params[] = $p_nozzle_id; }
+                            if($p_sale_type) { $sql_liquid .= " AND s.sale_type = ?"; $params[] = $p_sale_type; }
+                            
+                            // Get CNG Sales
+                            $sql_cng = "SELECT gs.*, p.product_name, n.nozzle_name, 'cng' as sale_type_label, 'm³' as unit_label 
+                                        FROM gas_sales gs 
+                                        JOIN nozzles n ON gs.nozzle_id = n.id 
+                                        JOIN fuel_products p ON n.product_id = p.id 
+                                        WHERE DATE(gs.sale_date) BETWEEN ? AND ? AND gs.status = 'completed'";
+                            $params_cng = [$p_from_date, $p_to_date];
+                            
+                            if($p_product_id) { $sql_cng .= " AND n.product_id = ?"; $params_cng[] = $p_product_id; }
+                            if($p_nozzle_id) { $sql_cng .= " AND gs.nozzle_id = ?"; $params_cng[] = $p_nozzle_id; }
+                            if($p_sale_type) { $sql_cng .= " AND gs.sale_type = ?"; $params_cng[] = $p_sale_type; }
+                            
+                            $stmt = $pdo->prepare($sql_liquid);
+                            $stmt->execute($params);
+                            $liquid_sales = $stmt->fetchAll();
+                            
+                            $stmt = $pdo->prepare($sql_cng);
+                            $stmt->execute($params_cng);
+                            $cng_sales = $stmt->fetchAll();
+                            
+                            $all_sales_data = array_merge($liquid_sales, $cng_sales);
+                            usort($all_sales_data, function($a, $b) {
+                                return strtotime($a['sale_date']) - strtotime($b['sale_date']);
+                            });
+                            
+                            // Calculate totals
+                            $total_transactions = count($all_sales_data);
+                            $total_amount = array_sum(array_column($all_sales_data, 'total_amount'));
+                            $total_cash = 0;
+                            $total_credit = 0;
+                            $total_cng = 0;
+                            
+                            foreach($all_sales_data as $sale) {
+                                if($sale['sale_type'] == 'cash') { $total_cash += $sale['total_amount']; } 
+                                else { $total_credit += $sale['total_amount']; }
+                                if($sale['sale_type_label'] == 'cng') { $total_cng += $sale['total_amount']; }
+                            }
+                            $total_liquid = $total_amount - $total_cng;
+                            ?>
+
+                            <!-- Plain Summary -->
+                            <div class="row mb-3">
+                                <div class="col-md-3">
+                                    <div class="plain-summary">
+                                        <h6>Total Sales</h6>
+                                        <h4><?php echo $currency; ?> <?php echo number_format($total_amount, 2); ?></h4>
+                                        <small><?php echo $total_transactions; ?> Transactions</small>
+                                    </div>
+                                </div>
+                                <div class="col-md-3">
+                                    <div class="plain-summary">
+                                        <h6>Cash Sales</h6>
+                                        <h4><?php echo $currency; ?> <?php echo number_format($total_cash, 2); ?></h4>
+                                    </div>
+                                </div>
+                                <div class="col-md-3">
+                                    <div class="plain-summary">
+                                        <h6>Credit Sales</h6>
+                                        <h4><?php echo $currency; ?> <?php echo number_format($total_credit, 2); ?></h4>
+                                    </div>
+                                </div>
+                                <div class="col-md-3">
+                                    <div class="plain-summary">
+                                        <h6>CNG Sales</h6>
+                                        <h4><?php echo $currency; ?> <?php echo number_format($total_cng, 2); ?></h4>
+                                        <small>Liquid: <?php echo $currency; ?> <?php echo number_format($total_liquid, 2); ?></small>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Plain Table -->
+                            <div class="table-responsive">
+                                <table class="table plain-table" id="plainReportTable">
+                                    <thead>
+                                        <tr>
+                                            <th>Date</th>
+                                            <th>Invoice</th>
+                                            <th>Type</th>
+                                            <th>Product</th>
+                                            <th>Nozzle</th>
+                                            <th>Customer</th>
+                                            <th class="text-end">Quantity</th>
+                                            <th class="text-end">Unit Price</th>
+                                            <th class="text-end">Total</th>
+                                            <th>Sale Type</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <?php if(empty($all_sales_data)): ?>
+                                        <tr>
+                                            <td colspan="10" style="text-align:center;">No sales found</td>
+                                        </tr>
+                                        <?php else: ?>
+                                            <?php foreach($all_sales_data as $sale): 
+                                                $is_cng = ($sale['sale_type_label'] == 'cng');
+                                                $badge_text = $is_cng ? 'CNG' : 'Liquid';
+                                                $unit_label = $is_cng ? 'm³' : 'L';
+                                            ?>
+                                            <tr>
+                                                <td><?php echo date('d-m-Y h:i A', strtotime($sale['sale_date'])); ?></td>
+                                                <td><?php echo $sale['invoice_no']; ?></td>
+                                                <td><?php echo $badge_text; ?></td>
+                                                <td><?php echo $sale['product_name']; ?></td>
+                                                <td><?php echo $sale['nozzle_name']; ?></td>
+                                                <td><?php echo $sale['customer_name'] ?: 'Walk-in'; ?></td>
+                                                <td class="text-end"><?php echo number_format($sale['quantity_liters'], 2); ?> <?php echo $unit_label; ?></td>
+                                                <td class="text-end"><?php echo $currency; ?> <?php echo number_format($sale['unit_price'], 2); ?></td>
+                                                <td class="text-end fw-bold"><?php echo $currency; ?> <?php echo number_format($sale['total_amount'], 2); ?></td>
+                                                <td><?php echo ucfirst($sale['sale_type']); ?></td>
+                                            </tr>
+                                            <?php endforeach; ?>
+                                        <?php endif; ?>
+                                    </tbody>
+                                    <tfoot>
+                                        <tr class="fw-bold">
+                                            <td colspan="8" class="text-end">TOTAL:</td>
+                                            <td class="text-end"><?php echo $currency; ?> <?php echo number_format($total_amount, 2); ?></td>
+                                            <td></td>
+                                        </tr>
+                                    </tfoot>
+                                </table>
+                            </div>
+
+                            <div class="mt-3 no-print">
+                                <button onclick="window.print()" class="btn btn-primary" style="border:1px solid #000; background:#f8f9fa; color:#000;">
+                                    <i class="fas fa-print"></i> Print Report (Plain Paper)
+                                </button>
+                                <button onclick="window.location.href='?tab=plain&p_from_date=<?php echo $p_from_date; ?>&p_to_date=<?php echo $p_to_date; ?>'" class="btn btn-secondary">
+                                    <i class="fas fa-redo"></i> Refresh
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <?php endif; ?>
+            
+            <!-- Footer -->
+            <div class="no-print" style="margin-top:20px; padding-top:10px; border-top:1px solid #ddd; text-align:center; font-size:11px; color:#666;">
+                <i class="fas fa-info-circle"></i>
+                <strong>Tip:</strong> Click <strong>Print Report</strong> button for plain paper format in landscape orientation.
+            </div>
         </div>
     </div>
     
@@ -1137,6 +1597,16 @@ $total_stock = $pdo->query("SELECT SUM(current_stock_liters) as total FROM tanks
                 
                 $('#itemReportTable').DataTable({
                     order: [[0, 'asc']],
+                    pageLength: 25,
+                    language: {
+                        search: "Search:",
+                        lengthMenu: "Show _MENU_ entries",
+                        info: "Showing _START_ to _END_ of _TOTAL_ entries"
+                    }
+                });
+                
+                $('#plainReportTable').DataTable({
+                    order: [[0, 'desc']],
                     pageLength: 25,
                     language: {
                         search: "Search:",
