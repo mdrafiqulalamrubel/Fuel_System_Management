@@ -362,7 +362,7 @@ $daily_avg = $days_count > 0 ? $total_amount / $days_count : 0;
                                         <a href="print_item_invoice.php?invoice=<?php echo $sale['invoice_no']; ?>" class="btn btn-sm btn-info" target="_blank" title="View Invoice">
                                             <i class="fas fa-file-invoice"></i>
                                         </a>
-                                        <a href="print_thermal_receipt.php?invoice=<?php echo $sale['invoice_no']; ?>&type=item" class="btn btn-sm btn-primary" target="_blank" title="Thermal Receipt">
+                                        <a href="print_item_thermal.php?invoice=<?php echo $sale['invoice_no']; ?>&type=item" class="btn btn-sm btn-primary" target="_blank" title="Thermal Receipt">
                                             <i class="fas fa-receipt"></i>
                                         </a>
                                     </td>

@@ -110,7 +110,7 @@ $default_unit_type = 'liters';
 // Process sale
 if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['make_sale'])) {
     $invoice_no = 'INV-' . date('YmdHis');
-    $shift_id = $_POST['shift_id'];
+    $shift_id = $active_shift['id'] ?? 0;
     $nozzle_id = $_POST['nozzle_id'];
     $product_id = $_POST['product_id'];
     $tank_id = $_POST['tank_id'];
@@ -545,17 +545,23 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                                     <div class="col-md-6">
                                         <div class="mb-3">
                                             <label><i class="fas fa-clock"></i> Shift</label>
-                                            <select name="shift_id" id="shift_id" class="form-control" required>
-                                                <option value="">Select Shift</option>
-                                                <?php foreach($shifts as $shift): ?>
-                                                    <option value="<?php echo $shift['id']; ?>" <?php echo ($auto_shift_id == $shift['id']) ? 'selected' : ''; ?>>
-                                                        <?php echo $shift['shift_name']; ?> (<?php echo date('h:i A', strtotime($shift['start_time'])); ?> - <?php echo date('h:i A', strtotime($shift['end_time'])); ?>)
-                                                    </option>
-                                                <?php endforeach; ?>
-                                            </select>
-                                            <span class="shift-note">
-                                                <i class="fas fa-info-circle"></i> Shift auto-selected based on active shift
-                                            </span>
+                                            <?php if($active_shift): ?>
+                                                <input type="text" class="form-control" value="<?php echo $active_shift['shift_name']; ?> (Started: <?php echo date('h:i A', strtotime($active_shift['opening_time'])); ?>)" readonly style="background:#e9ecef; font-weight:bold;">
+                                                <input type="hidden" name="shift_id" value="<?php echo $active_shift['shift_id']; ?>">
+                                                <small class="text-muted"><i class="fas fa-lock text-warning"></i> Shift locked - cannot be changed during active shift</small>
+                                            <?php else: ?>
+                                                <select name="shift_id" id="shift_id" class="form-control" required>
+                                                    <option value="">Select Shift</option>
+                                                    <?php foreach($shifts as $shift): ?>
+                                                        <option value="<?php echo $shift['id']; ?>" <?php echo ($auto_shift_id == $shift['id']) ? 'selected' : ''; ?>>
+                                                            <?php echo $shift['shift_name']; ?> (<?php echo date('h:i A', strtotime($shift['start_time'])); ?> - <?php echo date('h:i A', strtotime($shift['end_time'])); ?>)
+                                                        </option>
+                                                    <?php endforeach; ?>
+                                                </select>
+                                                <span class="shift-note">
+                                                    <i class="fas fa-info-circle"></i> Select shift to start
+                                                </span>
+                                            <?php endif; ?>
                                         </div>
                                     </div>
                                     <div class="col-md-6">

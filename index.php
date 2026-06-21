@@ -58,14 +58,15 @@ if($_SERVER['REQUEST_METHOD'] == 'POST') {
             width: 100%;
         }
 
-        /* Left Side - Image Section */
+        /* Left Side - Image Section with Fuel Station Background */
         .image-section {
             flex: 1;
             position: relative;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
             overflow: hidden;
         }
 
+        /* Fuel Station Background Image with Multiple Fallbacks */
         .image-section::before {
             content: '';
             position: absolute;
@@ -73,9 +74,48 @@ if($_SERVER['REQUEST_METHOD'] == 'POST') {
             left: 0;
             right: 0;
             bottom: 0;
-            background: url('https://images.unsplash.com/photo-1565022532506-bf2573e6e170?ixlib=rb-4.0.3&auto=format&fit=crop&w=1470&q=80') center/cover no-repeat;
-            opacity: 0.35;
+            background: 
+                /* Dark overlay for better text readability */
+                linear-gradient(180deg, 
+                    rgba(0,0,0,0.3) 0%, 
+                    rgba(0,0,0,0.2) 30%,
+                    rgba(0,0,0,0.1) 60%,
+                    rgba(0,0,0,0.3) 100%
+                ),
+                /* Multiple image fallbacks */
+                url('images/fuelbk.jpg'),
+                url('https://images.unsplash.com/photo-1565022532506-bf2573e6e170?ixlib=rb-4.0.3&auto=format&fit=crop&w=1470&q=80'),
+                url('https://images.unsplash.com/photo-1593459853561-a5fa2be2fcbd?ixlib=rb-4.0.3&auto=format&fit=crop&w=1470&q=80') 
+                center/cover no-repeat;
             z-index: 0;
+            animation: slowZoom 20s ease-in-out infinite alternate;
+        }
+
+        /* Animated zoom effect for the background */
+        @keyframes slowZoom {
+            0% {
+                transform: scale(1);
+            }
+            100% {
+                transform: scale(1.05);
+            }
+        }
+
+        /* Decorative overlay with gradient for depth */
+        .image-section::after {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: radial-gradient(
+                ellipse at 30% 50%,
+                rgba(102, 126, 234, 0.15) 0%,
+                rgba(118, 75, 162, 0.1) 50%,
+                transparent 100%
+            );
+            z-index: 1;
         }
 
         .image-content {
@@ -98,51 +138,68 @@ if($_SERVER['REQUEST_METHOD'] == 'POST') {
         .logo-icon {
             width: 50px;
             height: 50px;
-            background: rgba(255,255,255,0.2);
+            background: rgba(255,255,255,0.15);
             border-radius: 15px;
             display: flex;
             align-items: center;
             justify-content: center;
             font-size: 28px;
             backdrop-filter: blur(10px);
+            border: 1px solid rgba(255,255,255,0.1);
         }
 
         .logo-text h2 {
             font-size: 24px;
             font-weight: 700;
             margin: 0;
+            text-shadow: 0 2px 10px rgba(0,0,0,0.3);
         }
 
         .logo-text p {
             font-size: 12px;
             opacity: 0.8;
             margin: 0;
+            text-shadow: 0 1px 5px rgba(0,0,0,0.3);
         }
 
         .hero-text {
             text-align: center;
-            max-width: 80%;
+            max-width: 85%;
             margin: 0 auto;
+            padding: 20px;
+            background: rgba(0,0,0,0.25);
+            backdrop-filter: blur(8px);
+            border-radius: 20px;
+            border: 1px solid rgba(255,255,255,0.1);
         }
 
         .hero-text h1 {
-            font-size: 42px;
+            font-size: 38px;
             font-weight: 800;
             margin-bottom: 20px;
             line-height: 1.2;
+            text-shadow: 0 4px 15px rgba(0,0,0,0.3);
+        }
+
+        .hero-text h1 .highlight {
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
         }
 
         .hero-text p {
-            font-size: 16px;
+            font-size: 15px;
             opacity: 0.9;
             line-height: 1.6;
+            text-shadow: 0 2px 8px rgba(0,0,0,0.3);
         }
 
         .features {
             display: flex;
             justify-content: center;
-            gap: 30px;
-            margin-top: 40px;
+            gap: 20px;
+            margin-top: 35px;
             flex-wrap: wrap;
         }
 
@@ -150,26 +207,61 @@ if($_SERVER['REQUEST_METHOD'] == 'POST') {
             text-align: center;
             background: rgba(255,255,255,0.1);
             backdrop-filter: blur(10px);
-            padding: 15px 20px;
+            padding: 18px 22px;
             border-radius: 15px;
-            min-width: 120px;
+            min-width: 130px;
+            border: 1px solid rgba(255,255,255,0.08);
+            transition: all 0.3s ease;
+            flex: 1;
+            max-width: 180px;
+        }
+
+        .feature-item:hover {
+            transform: translateY(-5px);
+            background: rgba(255,255,255,0.2);
+            border-color: rgba(255,255,255,0.2);
         }
 
         .feature-item i {
-            font-size: 28px;
-            margin-bottom: 8px;
+            font-size: 32px;
+            margin-bottom: 10px;
             display: block;
         }
 
+        .feature-item .feature-icon-orange {
+            color: #f6a85b;
+        }
+
+        .feature-item .feature-icon-blue {
+            color: #5bc0de;
+        }
+
+        .feature-item .feature-icon-green {
+            color: #5cb85c;
+        }
+
+        .feature-item .feature-icon-purple {
+            color: #b39ddb;
+        }
+
         .feature-item span {
-            font-size: 12px;
-            font-weight: 500;
+            font-size: 13px;
+            font-weight: 600;
+            display: block;
+        }
+
+        .feature-item small {
+            font-size: 10px;
+            opacity: 0.7;
+            display: block;
+            margin-top: 2px;
         }
 
         .footer-note {
             text-align: center;
             font-size: 12px;
             opacity: 0.7;
+            text-shadow: 0 1px 5px rgba(0,0,0,0.3);
         }
 
         /* Right Side - Login Section */
@@ -197,6 +289,10 @@ if($_SERVER['REQUEST_METHOD'] == 'POST') {
             font-weight: 700;
             color: #333;
             margin-bottom: 8px;
+        }
+
+        .login-header h2 i {
+            color: #667eea;
         }
 
         .login-header p {
@@ -361,6 +457,29 @@ if($_SERVER['REQUEST_METHOD'] == 'POST') {
                 gap: 10px;
                 align-items: flex-start;
             }
+            
+            .hero-text {
+                max-width: 95%;
+                padding: 15px;
+            }
+            
+            .hero-text h1 {
+                font-size: 28px;
+            }
+            
+            .features {
+                gap: 10px;
+            }
+            
+            .feature-item {
+                min-width: 80px;
+                padding: 12px 15px;
+                max-width: 100%;
+            }
+            
+            .feature-item i {
+                font-size: 24px;
+            }
         }
     </style>
 </head>
@@ -380,31 +499,35 @@ if($_SERVER['REQUEST_METHOD'] == 'POST') {
                 </div>
                 
                 <div class="hero-text">
-                    <h1>Welcome to <br>Fuel Station Management</h1>
+                    <h1>Welcome to <br><span class="highlight">Fuel Station</span> Management</h1>
                     <p>Complete solution for managing fuel sales, inventory, accounting, payroll, and more. Streamline your gas station operations with our powerful software.</p>
                     
                     <div class="features">
                         <div class="feature-item">
-                            <i class="fas fa-shopping-cart"></i>
-                            <span>POS System</span>
+                            <i class="fas fa-gas-pump feature-icon-orange"></i>
+                            <span>Fuel POS</span>
+                            <small>Quick fuel sales</small>
                         </div>
                         <div class="feature-item">
-                            <i class="fas fa-chart-line"></i>
-                            <span>Real-time Reports</span>
+                            <i class="fas fa-boxes feature-icon-blue"></i>
+                            <span>Item POS</span>
+                            <small>Products & services</small>
                         </div>
                         <div class="feature-item">
-                            <i class="fas fa-tint"></i>
-                            <span>Leakage Control</span>
+                            <i class="fas fa-calculator feature-icon-green"></i>
+                            <span>Real-Time Accounting</span>
+                            <small>Live financial tracking</small>
                         </div>
                         <div class="feature-item">
-                            <i class="fas fa-users"></i>
-                            <span>Payroll System</span>
+                            <i class="fas fa-chart-bar feature-icon-purple"></i>
+                            <span>Real-Time Reporting</span>
+                            <small>Instant insights</small>
                         </div>
                     </div>
                 </div>
                 
                 <div class="footer-note">
-                    <p>&copy; 2024 DSL.  All rights reserved.</p>
+                    <p>&copy; 2024 Daffodil Software Limited. All rights reserved.</p>
                 </div>
             </div>
         </div>
@@ -413,7 +536,7 @@ if($_SERVER['REQUEST_METHOD'] == 'POST') {
         <div class="login-section">
             <div class="login-container">
                 <div class="login-header">
-                    <h2>Sign In</h2>
+                    <h2><i class="fas fa-sign-in-alt"></i> Sign In</h2>
                     <p>Enter your credentials to access the system</p>
                 </div>
                 

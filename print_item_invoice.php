@@ -97,7 +97,7 @@ $invoice_footer = $settings['invoice_footer'] ?? '*** THANK YOU ***';
                 <a href="item_pos.php" class="btn btn-secondary">
                     <i class="fas fa-arrow-left"></i> Back to POS
                 </a>
-                <a href="print_thermal_receipt.php?invoice=<?php echo $invoice_no; ?>&type=item" class="btn btn-info" target="_blank">
+                <a href="print_item_thermal.php?invoice=<?php echo $invoice_no; ?>&type=item" class="btn btn-info" target="_blank">
                     <i class="fas fa-receipt"></i> Thermal Receipt
                 </a>
             </div>

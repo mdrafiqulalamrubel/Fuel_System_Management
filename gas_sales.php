@@ -418,7 +418,9 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                 <i class="fas fa-clock"></i> 
                 <strong>Active Shift:</strong> <?php echo $active_shift['shift_name']; ?> | 
                 <strong>Started:</strong> <?php echo date('d-m-Y h:i A', strtotime($active_shift['opening_time'])); ?>
+                <span class="badge bg-warning text-dark ms-2"><i class="fas fa-lock"></i> Locked</span>
             </div>
+            <input type="hidden" name="shift_id" value="<?php echo $active_shift['shift_id']; ?>">
             <?php else: ?>
             <div class="alert alert-warning">
                 <i class="fas fa-exclamation-triangle"></i> 

@@ -486,10 +486,11 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                 </div>
             <?php endif; ?>
             
-            <?php if(!$active_shift): ?>
-            <div class="alert alert-warning">
-                <i class="fas fa-exclamation-triangle"></i> 
-                No active shift! Please <a href="shift_closing.php">start a shift</a> first.
+            <!-- Add this in the checkout form -->
+            <?php if($active_shift): ?>
+            <input type="hidden" name="shift_id" value="<?php echo $active_shift['shift_id']; ?>">
+            <div class="alert alert-info py-1 mb-2">
+                <small><i class="fas fa-clock"></i> Shift: <?php echo $active_shift['shift_name']; ?> (Started: <?php echo date('h:i A', strtotime($active_shift['opening_time'])); ?>)</small>
             </div>
             <?php endif; ?>
             
