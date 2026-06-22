@@ -58,23 +58,35 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['make_cng_sale'])) {
     $customer_phone = isset($_POST['customer_phone']) ? $_POST['customer_phone'] : '';
     $vehicle_number = isset($_POST['vehicle_number']) ? trim($_POST['vehicle_number']) : '';
     $remarks = isset($_POST['remarks']) ? trim($_POST['remarks']) : '';
-    $input_type = $_POST['input_type'] ?? 'amount'; // 'amount' or 'unit'
+    
+    // =============================================
+    // PAYMENT METHOD VARIABLES
+    // =============================================
+    $payment_method = isset($_POST['payment_method']) ? $_POST['payment_method'] : 'cash';
+    $card_number = isset($_POST['card_number']) ? trim($_POST['card_number']) : '';
+    $card_holder_name = isset($_POST['card_holder_name']) ? trim($_POST['card_holder_name']) : '';
+    $transaction_id = isset($_POST['transaction_id']) ? trim($_POST['transaction_id']) : '';
+    
+    // For credit sales, payment method is 'credit'
+    if($sale_type == 'credit') {
+        $payment_method = 'credit';
+    }
+    // =============================================
+    
+    $input_type = $_POST['input_type'] ?? 'amount';
     $amount_input = isset($_POST['amount_input']) ? floatval($_POST['amount_input']) : 0;
     $unit_input = isset($_POST['unit_input']) ? floatval($_POST['unit_input']) : 0;
     
     // Calculate based on input type
     if($input_type == 'amount' && $amount_input > 0) {
-        // Customer gave amount (TK) - calculate units
         $total_amount = $amount_input;
         $quantity = $total_amount / $unit_price;
         $closing_meter = $opening_meter + $quantity;
     } else if($input_type == 'unit' && $unit_input > 0) {
-        // Customer gave units (m³) - calculate amount
         $quantity = $unit_input;
         $total_amount = $quantity * $unit_price;
         $closing_meter = $opening_meter + $quantity;
     } else {
-        // Fallback: use meter difference
         $quantity = $closing_meter - $opening_meter;
         $total_amount = $quantity * $unit_price;
     }
@@ -90,7 +102,6 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['make_cng_sale'])) {
     $advance_payment_id = null;
 
     if($sale_type == 'credit' && !empty($customer_name)) {
-        // Get or create customer ID if not set
         if(empty($customer_id)) {
             if(!empty($customer_phone)) {
                 $stmt = $pdo->prepare("SELECT id FROM customers WHERE phone = ?");
@@ -111,7 +122,6 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['make_cng_sale'])) {
         }
         
         if($customer_id) {
-            // Check if customer has advance balance
             $stmt = $pdo->prepare("SELECT advance_balance FROM customers WHERE id = ?");
             $stmt->execute([$customer_id]);
             $advance_balance = $stmt->fetch()['advance_balance'] ?? 0;
@@ -120,11 +130,9 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['make_cng_sale'])) {
                 $advance_used = min($advance_balance, $total_amount);
                 
                 if($advance_used > 0) {
-                    // Update customer advance balance
                     $stmt = $pdo->prepare("UPDATE customers SET advance_balance = advance_balance - ? WHERE id = ?");
                     $stmt->execute([$advance_used, $customer_id]);
                     
-                    // Get the advance payment record to use
                     $stmt = $pdo->prepare("SELECT id FROM advance_payments_customer WHERE customer_id = ? AND balance_amount > 0 ORDER BY advance_date LIMIT 1");
                     $stmt->execute([$customer_id]);
                     $advance_record = $stmt->fetch();
@@ -133,7 +141,6 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['make_cng_sale'])) {
                         $stmt = $pdo->prepare("UPDATE advance_payments_customer SET used_amount = used_amount + ?, balance_amount = balance_amount - ? WHERE id = ?");
                         $stmt->execute([$advance_used, $advance_used, $advance_payment_id]);
                         
-                        // Check if fully used
                         $stmt = $pdo->prepare("SELECT balance_amount FROM advance_payments_customer WHERE id = ?");
                         $stmt->execute([$advance_payment_id]);
                         $new_balance = $stmt->fetch()['balance_amount'];
@@ -157,24 +164,42 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['make_cng_sale'])) {
         try {
             $pdo->beginTransaction();
             
-            // Insert into gas_sales table - ADDED vehicle_number and remarks
+            // Insert into gas_sales table with payment method fields
             $stmt = $pdo->prepare("
             INSERT INTO gas_sales (
                 invoice_no, sale_date, shift_id, nozzle_id, operator_id,
                 customer_name, customer_phone, sale_type,
+                payment_method, card_number, card_holder_name, transaction_id,
                 opening_meter, closing_meter, quantity_liters,
                 unit_price, total_amount, received_amount, change_amount,
                 status, advance_used, advance_payment_id,
                 vehicle_number, remarks
-            ) VALUES (?, NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed', ?, ?, ?, ?)
-        ");
+            ) VALUES (?, NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed', ?, ?, ?, ?)
+            ");
+
             $stmt->execute([
-                $invoice_no, $shift_id, $nozzle_id, $user['id'],
-                $customer_name, $customer_phone, $sale_type,
-                $opening_meter, $closing_meter, $quantity,
-                $unit_price, $total_amount, $received, $change,
-                $advance_used, $advance_payment_id,
-                $vehicle_number, $remarks
+                $invoice_no,       // 1. invoice_no
+                $shift_id,         // 2. shift_id
+                $nozzle_id,        // 3. nozzle_id
+                $user['id'],       // 4. operator_id
+                $customer_name,    // 5. customer_name
+                $customer_phone,   // 6. customer_phone
+                $sale_type,        // 7. sale_type
+                $payment_method,   // 8. payment_method
+                $card_number,      // 9. card_number
+                $card_holder_name, // 10. card_holder_name
+                $transaction_id,   // 11. transaction_id
+                $opening_meter,    // 12. opening_meter
+                $closing_meter,    // 13. closing_meter
+                $quantity,         // 14. quantity_liters
+                $unit_price,       // 15. unit_price
+                $total_amount,     // 16. total_amount
+                $received,         // 17. received_amount
+                $change,           // 18. change_amount
+                $advance_used,     // 19. advance_used
+                $advance_payment_id, // 20. advance_payment_id
+                $vehicle_number,   // 21. vehicle_number
+                $remarks           // 22. remarks
             ]);
             
             $sale_id = $pdo->lastInsertId();
@@ -190,7 +215,6 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['make_cng_sale'])) {
             $stmt = $pdo->query("SELECT id FROM chart_of_accounts WHERE account_code = '4000' OR account_name LIKE '%CNG Sales%' LIMIT 1");
             $sales_account = $stmt->fetch();
             
-            // If CNG Sales account doesn't exist, create it
             if(!$sales_account) {
                 $stmt = $pdo->prepare("INSERT INTO chart_of_accounts (account_code, account_name, account_type, balance_type, is_active) VALUES ('4001', 'CNG Sales', 'income', 'credit', 1)");
                 $stmt->execute();
@@ -220,7 +244,6 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['make_cng_sale'])) {
             if($sale_type == 'credit') {
                 $customer_id = null;
                 
-                // Get or create customer
                 if(!empty($customer_phone)) {
                     $stmt = $pdo->prepare("SELECT id FROM customers WHERE phone = ?");
                     $stmt->execute([$customer_phone]);
@@ -264,9 +287,6 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['make_cng_sale'])) {
             
             $pdo->commit();
             
-            // =============================================
-            // STORE SESSION DATA
-            // =============================================
             $_SESSION['last_cng_invoice'] = [
                 'invoice_no' => $invoice_no,
                 'customer_name' => $customer_name,
@@ -283,12 +303,13 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['make_cng_sale'])) {
                 'received' => $received,
                 'change' => $change,
                 'input_type' => $input_type,
-                'sale_type' => $sale_type
+                'sale_type' => $sale_type,
+                'payment_method' => $payment_method,
+                'card_number' => $card_number,
+                'card_holder_name' => $card_holder_name,
+                'transaction_id' => $transaction_id
             ];
             
-            // =============================================
-            // REDIRECT TO CNG INVOICE (NOT THERMAL)
-            // =============================================
             header("Location: print_cng_invoice.php?invoice=" . $invoice_no);
             exit();
             
@@ -387,6 +408,56 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
             margin: 5px 0; 
         }
         .vehicle-field i { color: #667eea; }
+
+        /* Payment Method Styles */
+        .payment-section {
+            background: #e8f4f8;
+            padding: 12px 15px;
+            border-radius: 8px;
+            margin: 10px 0 15px 0;
+            border-left: 4px solid #17a2b8;
+        }
+        .payment-section .payment-methods {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            margin-top: 5px;
+        }
+        .payment-method-btn {
+            padding: 6px 15px;
+            border: 2px solid #dee2e6;
+            border-radius: 20px;
+            background: white;
+            cursor: pointer;
+            font-size: 12px;
+            font-weight: 500;
+            transition: all 0.3s;
+        }
+        .payment-method-btn:hover {
+            border-color: #667eea;
+        }
+        .payment-method-btn.active {
+            background: #667eea;
+            color: white;
+            border-color: #667eea;
+        }
+        .payment-method-btn i { margin-right: 5px; }
+        .payment-details-fields {
+            display: none;
+            margin-top: 10px;
+            padding: 10px;
+            background: white;
+            border-radius: 8px;
+            border: 1px solid #dee2e6;
+        }
+        .payment-details-fields.show {
+            display: block;
+        }
+        .payment-icon-cash { color: #28a745; }
+        .payment-icon-card { color: #0d6efd; }
+        .payment-icon-bkash { color: #e2136e; }
+        .payment-icon-nagad { color: #ff6b00; }
+        .payment-icon-credit { color: #ffc107; }
     </style>
 </head>
 <body>
@@ -468,10 +539,56 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                                     <div class="col-md-6">
                                         <div class="mb-3">
                                             <label><i class="fas fa-tag"></i> Sale Type</label>
-                                            <select name="sale_type" id="sale_type" class="form-control" required>
-                                                <option value="cash">Cash</option>
-                                                <option value="credit">Credit</option>
+                                            <select name="sale_type" id="sale_type" class="form-control" required onchange="toggleSaleType(this)">
+                                                <option value="cash">Cash Sale</option>
+                                                <option value="credit">Credit Sale</option>
                                             </select>
+                                        </div>
+                                    </div>
+                                </div>
+                                
+                                <!-- Payment Method Section (Visible only for Cash Sales) -->
+                                <div id="payment_section" class="payment-section">
+                                    <label><i class="fas fa-wallet"></i> Payment Method</label>
+                                    <div class="payment-methods">
+                                        <button type="button" class="payment-method-btn active" data-method="cash" onclick="selectPaymentMethod('cash')">
+                                            <i class="fas fa-money-bill-wave payment-icon-cash"></i> Cash
+                                        </button>
+                                        <button type="button" class="payment-method-btn" data-method="card" onclick="selectPaymentMethod('card')">
+                                            <i class="fas fa-credit-card payment-icon-card"></i> Card
+                                        </button>
+                                        <button type="button" class="payment-method-btn" data-method="bkash" onclick="selectPaymentMethod('bkash')">
+                                            <i class="fas fa-mobile-alt payment-icon-bkash"></i> Bkash
+                                        </button>
+                                        <button type="button" class="payment-method-btn" data-method="nagad" onclick="selectPaymentMethod('nagad')">
+                                            <i class="fas fa-mobile-alt payment-icon-nagad"></i> Nagad
+                                        </button>
+                                    </div>
+                                    <input type="hidden" name="payment_method" id="payment_method" value="cash">
+                                    
+                                    <!-- Card Details -->
+                                    <div id="card_details" class="payment-details-fields">
+                                        <div class="row">
+                                            <div class="col-md-6">
+                                                <div class="mb-2">
+                                                    <label><i class="fas fa-credit-card"></i> Card Number</label>
+                                                    <input type="text" name="card_number" id="card_number" class="form-control form-control-sm" placeholder="XXXX-XXXX-XXXX-XXXX">
+                                                </div>
+                                            </div>
+                                            <div class="col-md-6">
+                                                <div class="mb-2">
+                                                    <label><i class="fas fa-user"></i> Card Holder Name</label>
+                                                    <input type="text" name="card_holder_name" id="card_holder_name" class="form-control form-control-sm" placeholder="Name on card">
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <div class="row">
+                                            <div class="col-md-12">
+                                                <div class="mb-2">
+                                                    <label><i class="fas fa-hashtag"></i> Transaction ID</label>
+                                                    <input type="text" name="transaction_id" id="transaction_id" class="form-control form-control-sm" placeholder="Enter transaction ID">
+                                                </div>
+                                            </div>
                                         </div>
                                     </div>
                                 </div>
@@ -549,9 +666,7 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                                     </div>
                                 </div>
                                 
-                                <!-- ============================================= -->
-                                <!-- VEHICLE NUMBER & REMARKS - ADDED -->
-                                <!-- ============================================= -->
+                                <!-- Vehicle Number & Remarks -->
                                 <div class="row">
                                     <div class="col-md-6">
                                         <div class="mb-3">
@@ -621,6 +736,7 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                 </div>
                 
                 <div class="col-md-5">
+                    <!-- Available CNG Nozzles -->
                     <div class="cng-card">
                         <div class="cng-card-header cng">
                             <i class="fas fa-oil-can"></i> Available CNG Nozzles
@@ -885,7 +1001,6 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                 document.getElementById('calculated_amount').innerText = total.toFixed(2);
             }
             
-            // Set closing meter
             if(quantity > 0) {
                 closingMeter = parseFloat(document.getElementById('opening_meter').value) || 0;
                 document.getElementById('closing_meter').value = (closingMeter + quantity).toFixed(2);
@@ -903,7 +1018,70 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
             document.getElementById('change_amount').value = change.toFixed(2);
         }
 
-        // Form validation
+        // =============================================
+        // PAYMENT METHOD FUNCTIONS
+        // =============================================
+        function selectPaymentMethod(method) {
+            document.getElementById('payment_method').value = method;
+            
+            document.querySelectorAll('.payment-method-btn').forEach(btn => {
+                btn.classList.remove('active');
+                if(btn.dataset.method == method) {
+                    btn.classList.add('active');
+                }
+            });
+            
+            if(method === 'card') {
+                document.getElementById('card_details').classList.add('show');
+            } else {
+                document.getElementById('card_details').classList.remove('show');
+            }
+            
+            if(method === 'bkash' || method === 'nagad') {
+                document.getElementById('transaction_id').placeholder = 'Enter ' + method.charAt(0).toUpperCase() + method.slice(1) + ' transaction ID';
+            } else {
+                document.getElementById('transaction_id').placeholder = 'Enter transaction ID';
+            }
+        }
+
+        function toggleSaleType(select) {
+            const paymentSection = document.getElementById('payment_section');
+            const customerFields = document.getElementById('customer_fields');
+            const cashFields = document.getElementById('cash_fields');
+            
+            if(select.value === 'credit') {
+                paymentSection.style.display = 'none';
+                customerFields.style.display = 'block';
+                cashFields.style.display = 'none';
+                document.getElementById('customer_name').setAttribute('required', 'required');
+                document.getElementById('received').value = 0;
+                document.getElementById('payment_method').value = 'credit';
+            } else {
+                paymentSection.style.display = 'block';
+                customerFields.style.display = 'none';
+                cashFields.style.display = 'block';
+                document.getElementById('customer_name').removeAttribute('required');
+                document.getElementById('received').value = 0;
+                document.getElementById('payment_method').value = 'cash';
+                document.getElementById('card_details').classList.remove('show');
+                document.querySelectorAll('.payment-method-btn').forEach(btn => {
+                    btn.classList.remove('active');
+                    if(btn.dataset.method === 'cash') {
+                        btn.classList.add('active');
+                    }
+                });
+            }
+            calculateChange();
+        }
+
+        // Set initial payment method to cash
+        document.addEventListener('DOMContentLoaded', function() {
+            selectPaymentMethod('cash');
+        });
+
+        // =============================================
+        // FORM VALIDATION
+        // =============================================
         document.getElementById('cngSaleForm').addEventListener('submit', function(e) {
             let nozzle = document.getElementById('nozzle_id').value;
             let method = document.getElementById('input_type').value;
@@ -947,14 +1125,33 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                 }
             }
             
+            // Validate payment method fields for card
+            let paymentMethod = document.getElementById('payment_method').value;
+            if(saleType == 'cash' && paymentMethod == 'card') {
+                let cardNumber = document.getElementById('card_number').value.trim();
+                let cardHolderName = document.getElementById('card_holder_name').value.trim();
+                if(!cardNumber) {
+                    e.preventDefault();
+                    alert('❌ Please enter card number');
+                    return false;
+                }
+                if(!cardHolderName) {
+                    e.preventDefault();
+                    alert('❌ Please enter card holder name');
+                    return false;
+                }
+            }
+            
             // Confirm the sale
             let total = parseFloat(document.getElementById('total_amount').innerText) || 0;
             let quantity = method === 'amount' ? parseFloat(document.getElementById('calculated_units').innerText) : units;
+            let paymentLabel = document.querySelector('.payment-method-btn.active')?.innerText?.trim() || 'Cash';
             
             let confirmMsg = `⚠️ CONFIRM CNG SALE ⚠️\n\n`;
             confirmMsg += `📊 Quantity: ${quantity.toFixed(2)} m³\n`;
             confirmMsg += `💰 Amount: BDT ${total.toFixed(2)}\n`;
             confirmMsg += `📌 Type: ${document.querySelector('#sale_type option:checked').text}\n`;
+            confirmMsg += `💳 Payment: ${paymentLabel}\n`;
             if(saleType == 'credit') {
                 confirmMsg += `👤 Customer: ${document.getElementById('customer_name').value.trim()}\n`;
             }

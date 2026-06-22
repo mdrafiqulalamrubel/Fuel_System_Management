@@ -45,17 +45,14 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['add_to_cart'])) {
     if($quantity <= 0) {
         $error = "Please enter valid quantity!";
     } else {
-        // Get item details
         $stmt = $pdo->prepare("SELECT * FROM items WHERE id = ? AND is_active = 1");
         $stmt->execute([$item_id]);
         $item = $stmt->fetch();
         
         if($item) {
-            // Check stock for products
             if($item['item_type'] == 'product' && $item['current_stock'] < $quantity) {
                 $error = "Insufficient stock! Available: " . $item['current_stock'] . " " . $item['unit'];
             } else {
-                // Add to cart
                 $cart_item = [
                     'item_id' => $item['id'],
                     'item_code' => $item['item_code'],
@@ -67,7 +64,6 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['add_to_cart'])) {
                     'total' => $quantity * $item['selling_price']
                 ];
                 
-                // Check if item already in cart
                 $found = false;
                 foreach($cart as $key => $ci) {
                     if($ci['item_id'] == $item_id) {
@@ -136,18 +132,31 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['process_sale'])) {
         $customer_name = $_POST['customer_name'] ?? '';
         $customer_phone = $_POST['customer_phone'] ?? '';
         $sale_type = $_POST['sale_type'] ?? 'cash';
+        
+        // =============================================
+        // PAYMENT METHOD VARIABLES
+        // =============================================
+        $payment_method = isset($_POST['payment_method']) ? $_POST['payment_method'] : 'cash';
+        $card_number = isset($_POST['card_number']) ? trim($_POST['card_number']) : '';
+        $card_holder_name = isset($_POST['card_holder_name']) ? trim($_POST['card_holder_name']) : '';
+        $transaction_id = isset($_POST['transaction_id']) ? trim($_POST['transaction_id']) : '';
+        
+        if($sale_type == 'credit') {
+            $payment_method = 'credit';
+        }
+        // =============================================
+        
         $discount_percent = floatval($_POST['discount_percent'] ?? 0);
         $discount_amount = floatval($_POST['discount_amount'] ?? 0);
         $received = floatval($_POST['received'] ?? 0);
         $notes = $_POST['notes'] ?? '';
         $invoice_no = 'ITEM-' . date('YmdHis') . rand(100, 999);
         $shift_id = $active_shift['id'] ?? 0;
-        
+                
         // Calculate totals
         $subtotal = array_sum(array_column($cart, 'total'));
-        $tax_amount = 0; // Simplified - could add tax per item later
+        $tax_amount = 0;
         
-        // Apply discount
         if($discount_percent > 0) {
             $discount_amount = ($subtotal * $discount_percent) / 100;
         }
@@ -161,7 +170,6 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['process_sale'])) {
             try {
                 $pdo->beginTransaction();
                 
-                // Create customer if needed
                 if($customer_id) {
                     $stmt = $pdo->prepare("SELECT * FROM customers WHERE id = ?");
                     $stmt->execute([$customer_id]);
@@ -171,7 +179,6 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['process_sale'])) {
                         $customer_phone = $customer['phone'];
                     }
                 } elseif(!empty($customer_name) && $sale_type == 'credit') {
-                    // Check if customer exists
                     $stmt = $pdo->prepare("SELECT id FROM customers WHERE phone = ? OR customer_name = ?");
                     $stmt->execute([$customer_phone, $customer_name]);
                     $existing = $stmt->fetch();
@@ -185,19 +192,24 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['process_sale'])) {
                     }
                 }
                 
-                // Insert sale
+                // =============================================
+                // INSERT SALE WITH PAYMENT METHOD FIELDS
+                // =============================================
                 $stmt = $pdo->prepare("
                     INSERT INTO item_sales (
                         invoice_no, sale_date, shift_id, customer_id, customer_name, customer_phone,
-                        sale_type, subtotal, discount_amount, discount_percent, tax_amount,
+                        sale_type, payment_method, card_number, card_holder_name, transaction_id,
+                        subtotal, discount_amount, discount_percent, tax_amount,
                         total_amount, received_amount, change_amount, notes, created_by, status
-                    ) VALUES (?, NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed')
+                    ) VALUES (?, NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed')
                 ");
                 $stmt->execute([
                     $invoice_no, $shift_id, $customer_id, $customer_name, $customer_phone,
-                    $sale_type, $subtotal, $discount_amount, $discount_percent, $tax_amount,
+                    $sale_type, $payment_method, $card_number, $card_holder_name, $transaction_id,
+                    $subtotal, $discount_amount, $discount_percent, $tax_amount,
                     $total_amount, $received, $change, $notes, $user['id']
                 ]);
+
                 $sale_id = $pdo->lastInsertId();
                 
                 // Insert sale items
@@ -208,7 +220,6 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['process_sale'])) {
                     ");
                     $stmt->execute([$sale_id, $item['item_id'], $item['quantity'], $item['unit_price'], $item['total']]);
                     
-                    // Update stock for products
                     if($item['item_type'] == 'product') {
                         $stmt = $pdo->prepare("UPDATE items SET current_stock = current_stock - ? WHERE id = ?");
                         $stmt->execute([$item['quantity'], $item['item_id']]);
@@ -216,7 +227,6 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['process_sale'])) {
                 }
                 
                 // Accounting entries
-                // Get accounts
                 $stmt = $pdo->query("SELECT id FROM chart_of_accounts WHERE account_code = '1000' LIMIT 1");
                 $cash_account = $stmt->fetch();
                 
@@ -257,7 +267,6 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['process_sale'])) {
                         $voucher_id, $sales_account['id'], 0, $total_amount, "Item sales revenue - $invoice_no"
                     ]);
                     
-                    // Update customer balance
                     if($customer_id) {
                         $stmt = $pdo->prepare("UPDATE customers SET current_balance = current_balance + ? WHERE id = ?");
                         $stmt->execute([$total_amount, $customer_id]);
@@ -266,10 +275,8 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['process_sale'])) {
                 
                 $pdo->commit();
                 
-                // Clear cart
                 $_SESSION['item_cart'] = [];
                 
-                // Store invoice for printing
                 $_SESSION['last_item_invoice'] = [
                     'invoice_no' => $invoice_no,
                     'customer_name' => $customer_name,
@@ -282,10 +289,13 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['process_sale'])) {
                     'total' => $total_amount,
                     'received' => $received,
                     'change' => $change,
-                    'sale_type' => $sale_type
+                    'sale_type' => $sale_type,
+                    'payment_method' => $payment_method,
+                    'card_number' => $card_number,
+                    'card_holder_name' => $card_holder_name,
+                    'transaction_id' => $transaction_id
                 ];
                 
-                // Redirect to invoice
                 header("Location: print_item_invoice.php?invoice=" . $invoice_no);
                 exit();
                 
@@ -432,6 +442,56 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
             padding: 10px 15px;
         }
         
+        /* Payment Method Styles */
+        .payment-section {
+            background: #e8f4f8;
+            padding: 12px 15px;
+            border-radius: 8px;
+            margin: 10px 0 15px 0;
+            border-left: 4px solid #17a2b8;
+        }
+        .payment-section .payment-methods {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            margin-top: 5px;
+        }
+        .payment-method-btn {
+            padding: 6px 15px;
+            border: 2px solid #dee2e6;
+            border-radius: 20px;
+            background: white;
+            cursor: pointer;
+            font-size: 12px;
+            font-weight: 500;
+            transition: all 0.3s;
+        }
+        .payment-method-btn:hover {
+            border-color: #667eea;
+        }
+        .payment-method-btn.active {
+            background: #667eea;
+            color: white;
+            border-color: #667eea;
+        }
+        .payment-method-btn i { margin-right: 5px; }
+        .payment-details-fields {
+            display: none;
+            margin-top: 10px;
+            padding: 10px;
+            background: white;
+            border-radius: 8px;
+            border: 1px solid #dee2e6;
+        }
+        .payment-details-fields.show {
+            display: block;
+        }
+        .payment-icon-cash { color: #28a745; }
+        .payment-icon-card { color: #0d6efd; }
+        .payment-icon-bkash { color: #e2136e; }
+        .payment-icon-nagad { color: #ff6b00; }
+        .payment-icon-credit { color: #ffc107; }
+        
         @media (max-width: 768px) {
             .split-container {
                 flex-direction: column;
@@ -486,7 +546,6 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                 </div>
             <?php endif; ?>
             
-            <!-- Add this in the checkout form -->
             <?php if($active_shift): ?>
             <input type="hidden" name="shift_id" value="<?php echo $active_shift['shift_id']; ?>">
             <div class="alert alert-info py-1 mb-2">
@@ -625,11 +684,57 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                                     </div>
                                     <div class="col-6">
                                         <label>Sale Type</label>
-                                        <select name="sale_type" class="form-control form-control-sm" onchange="toggleSaleType(this)">
-                                            <option value="cash">Cash</option>
-                                            <option value="credit">Credit</option>
+                                        <select name="sale_type" id="sale_type" class="form-control form-control-sm" onchange="toggleSaleType(this)">
+                                            <option value="cash">Cash Sale</option>
+                                            <option value="credit">Credit Sale</option>
                                         </select>
                                     </div>
+                                    
+                                    <!-- Payment Method Section -->
+                                    <div class="col-12">
+                                        <div id="payment_section" class="payment-section">
+                                            <label><i class="fas fa-wallet"></i> Payment Method</label>
+                                            <div class="payment-methods">
+                                                <button type="button" class="payment-method-btn active" data-method="cash" onclick="selectPaymentMethod('cash')">
+                                                    <i class="fas fa-money-bill-wave payment-icon-cash"></i> Cash
+                                                </button>
+                                                <button type="button" class="payment-method-btn" data-method="card" onclick="selectPaymentMethod('card')">
+                                                    <i class="fas fa-credit-card payment-icon-card"></i> Card
+                                                </button>
+                                                <button type="button" class="payment-method-btn" data-method="bkash" onclick="selectPaymentMethod('bkash')">
+                                                    <i class="fas fa-mobile-alt payment-icon-bkash"></i> Bkash
+                                                </button>
+                                                <button type="button" class="payment-method-btn" data-method="nagad" onclick="selectPaymentMethod('nagad')">
+                                                    <i class="fas fa-mobile-alt payment-icon-nagad"></i> Nagad
+                                                </button>
+                                            </div>
+                                            <input type="hidden" name="payment_method" id="payment_method" value="cash">
+                                            
+                                            <div id="card_details" class="payment-details-fields">
+                                                <div class="row">
+                                                    <div class="col-md-6">
+                                                        <div class="mb-2">
+                                                            <label>Card Number</label>
+                                                            <input type="text" name="card_number" id="card_number" class="form-control form-control-sm" placeholder="XXXX-XXXX-XXXX-XXXX">
+                                                        </div>
+                                                    </div>
+                                                    <div class="col-md-6">
+                                                        <div class="mb-2">
+                                                            <label>Card Holder Name</label>
+                                                            <input type="text" name="card_holder_name" id="card_holder_name" class="form-control form-control-sm" placeholder="Name on card">
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                                <div class="col-md-12">
+                                                    <div class="mb-2">
+                                                        <label>Transaction ID</label>
+                                                        <input type="text" name="transaction_id" id="transaction_id" class="form-control form-control-sm" placeholder="Enter transaction ID">
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    
                                     <div class="col-6">
                                         <label>Customer Name</label>
                                         <input type="text" name="customer_name" id="customer_name" class="form-control form-control-sm" placeholder="Name">
@@ -731,7 +836,6 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
         
         let isDragging = false;
         
-        // Set initial widths (50/50)
         if (window.innerWidth > 768) {
             leftPanel.style.flex = '1';
             rightPanel.style.flex = '1';
@@ -751,7 +855,6 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
             const containerWidth = containerRect.width;
             const mouseX = e.clientX - containerRect.left;
             
-            // Calculate percentage (10% to 90% limits)
             const percent = Math.min(Math.max((mouseX / containerWidth) * 100, 15), 85);
             
             leftPanel.style.flex = 'none';
@@ -770,6 +873,62 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
         });
         
         // =============================================
+        // PAYMENT METHOD FUNCTIONS
+        // =============================================
+        function selectPaymentMethod(method) {
+            document.getElementById('payment_method').value = method;
+            
+            document.querySelectorAll('.payment-method-btn').forEach(btn => {
+                btn.classList.remove('active');
+                if(btn.dataset.method == method) {
+                    btn.classList.add('active');
+                }
+            });
+            
+            if(method === 'card') {
+                document.getElementById('card_details').classList.add('show');
+            } else {
+                document.getElementById('card_details').classList.remove('show');
+            }
+            
+            if(method === 'bkash' || method === 'nagad') {
+                document.getElementById('transaction_id').placeholder = 'Enter ' + method.charAt(0).toUpperCase() + method.slice(1) + ' transaction ID';
+            } else {
+                document.getElementById('transaction_id').placeholder = 'Enter transaction ID';
+            }
+        }
+        
+        function toggleSaleType(select) {
+            const paymentSection = document.getElementById('payment_section');
+            const customerFields = document.getElementById('customer_fields');
+            const cashFields = document.getElementById('cash_fields');
+            
+            if(select.value === 'credit') {
+                paymentSection.style.display = 'none';
+                customerFields.style.display = 'block';
+                cashFields.style.display = 'none';
+                document.getElementById('customer_name').setAttribute('required', 'required');
+                document.getElementById('received').value = 0;
+                document.getElementById('payment_method').value = 'credit';
+            } else {
+                paymentSection.style.display = 'block';
+                customerFields.style.display = 'none';
+                cashFields.style.display = 'block';
+                document.getElementById('customer_name').removeAttribute('required');
+                document.getElementById('received').value = 0;
+                document.getElementById('payment_method').value = 'cash';
+                document.getElementById('card_details').classList.remove('show');
+                document.querySelectorAll('.payment-method-btn').forEach(btn => {
+                    btn.classList.remove('active');
+                    if(btn.dataset.method === 'cash') {
+                        btn.classList.add('active');
+                    }
+                });
+            }
+            calculateChange();
+        }
+        
+        // =============================================
         // POS FUNCTIONS
         // =============================================
         function addToCart(itemId, itemName, price, type, unit, stock) {
@@ -780,7 +939,6 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
             
             let qty = prompt('Enter quantity for ' + itemName + ':', '1');
             if(qty && parseFloat(qty) > 0) {
-                // Create a hidden form and submit
                 let form = document.createElement('form');
                 form.method = 'POST';
                 form.action = '';
@@ -829,14 +987,6 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
             }
         }
         
-        function toggleSaleType(select) {
-            if(select.value == 'credit') {
-                document.getElementById('customer_name').setAttribute('required', 'required');
-            } else {
-                document.getElementById('customer_name').removeAttribute('required');
-            }
-        }
-        
         function calculateChange() {
             let subtotal = parseFloat(document.getElementById('cartSubtotal').innerText.replace(/,/g, '')) || 0;
             let discountPercent = parseFloat(document.querySelector('input[name="discount_percent"]').value) || 0;
@@ -856,6 +1006,9 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
         // Auto calculate change on load
         setTimeout(calculateChange, 100);
         
+        // Set initial payment method to cash
+        selectPaymentMethod('cash');
+        
         // Form validation
         document.getElementById('checkoutForm').addEventListener('submit', function(e) {
             let saleType = document.querySelector('select[name="sale_type"]').value;
@@ -865,6 +1018,23 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                 e.preventDefault();
                 alert('❌ Please enter customer name for credit sale');
                 return false;
+            }
+            
+            // Validate payment method fields for card
+            let paymentMethod = document.getElementById('payment_method').value;
+            if(saleType == 'cash' && paymentMethod == 'card') {
+                let cardNumber = document.getElementById('card_number').value.trim();
+                let cardHolderName = document.getElementById('card_holder_name').value.trim();
+                if(!cardNumber) {
+                    e.preventDefault();
+                    alert('❌ Please enter card number');
+                    return false;
+                }
+                if(!cardHolderName) {
+                    e.preventDefault();
+                    alert('❌ Please enter card holder name');
+                    return false;
+                }
             }
             
             let cartCount = parseInt(document.getElementById('cartCount').innerText) || 0;

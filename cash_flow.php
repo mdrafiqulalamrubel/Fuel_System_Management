@@ -5,47 +5,122 @@ if(!isLoggedIn()) redirect('index.php');
 $from_date = isset($_GET['from_date']) && !empty($_GET['from_date']) ? $_GET['from_date'] : date('Y-m-01');
 $to_date = isset($_GET['to_date']) && !empty($_GET['to_date']) ? $_GET['to_date'] : date('Y-m-t');
 
-// Cash inflows (receipts)
+// =============================================
+// CASH INFLOWS (Receipts from vouchers)
+// =============================================
 $stmt = $pdo->prepare("SELECT SUM(credit_amount) as total FROM voucher_items vi JOIN vouchers v ON vi.voucher_id = v.id WHERE v.date BETWEEN ? AND ? AND v.voucher_type = 'receipt' AND v.status = 'approved'");
 $stmt->execute([$from_date, $to_date]);
 $cash_inflows = $stmt->fetch()['total'] ?? 0;
 
-// Cash outflows (payments)
+// =============================================
+// CASH OUTFLOWS (Payments from vouchers)
+// =============================================
 $stmt = $pdo->prepare("SELECT SUM(debit_amount) as total FROM voucher_items vi JOIN vouchers v ON vi.voucher_id = v.id WHERE v.date BETWEEN ? AND ? AND v.voucher_type = 'payment' AND v.status = 'approved'");
 $stmt->execute([$from_date, $to_date]);
 $cash_outflows = $stmt->fetch()['total'] ?? 0;
 
-// Operating activities - Sales
+// =============================================
+// OPERATING ACTIVITIES - Cash Sales (Liquid Fuel)
+// =============================================
 $stmt = $pdo->prepare("SELECT SUM(total_amount) as total FROM sales WHERE DATE(sale_date) BETWEEN ? AND ? AND sale_type = 'cash'");
 $stmt->execute([$from_date, $to_date]);
 $cash_sales = $stmt->fetch()['total'] ?? 0;
 
-// Operating activities - Credit Sales (Accounts Receivable)
+// =============================================
+// OPERATING ACTIVITIES - Cash Sales (CNG)
+// =============================================
+$stmt = $pdo->prepare("SELECT SUM(total_amount) as total FROM gas_sales WHERE DATE(sale_date) BETWEEN ? AND ? AND sale_type = 'cash' AND status = 'completed'");
+$stmt->execute([$from_date, $to_date]);
+$cng_cash_sales = $stmt->fetch()['total'] ?? 0;
+
+// =============================================
+// Total Cash Sales (Liquid + CNG)
+// =============================================
+$total_cash_sales = $cash_sales + $cng_cash_sales;
+
+// =============================================
+// OPERATING ACTIVITIES - Credit Sales
+// =============================================
 $stmt = $pdo->prepare("SELECT SUM(total_amount) as total FROM sales WHERE DATE(sale_date) BETWEEN ? AND ? AND sale_type = 'credit'");
 $stmt->execute([$from_date, $to_date]);
-$credit_sales = $stmt->fetch()['total'] ?? 0;
+$credit_sales_liquid = $stmt->fetch()['total'] ?? 0;
 
-// Operating activities - Rent
+$stmt = $pdo->prepare("SELECT SUM(total_amount) as total FROM gas_sales WHERE DATE(sale_date) BETWEEN ? AND ? AND sale_type = 'credit' AND status = 'completed'");
+$stmt->execute([$from_date, $to_date]);
+$credit_sales_cng = $stmt->fetch()['total'] ?? 0;
+
+$total_credit_sales = $credit_sales_liquid + $credit_sales_cng;
+
+// =============================================
+// OPERATING ACTIVITIES - Item Sales
+// =============================================
+$stmt = $pdo->prepare("SELECT SUM(total_amount) as total FROM item_sales WHERE DATE(sale_date) BETWEEN ? AND ? AND sale_type = 'cash'");
+$stmt->execute([$from_date, $to_date]);
+$item_sales = $stmt->fetch()['total'] ?? 0;
+
+// =============================================
+// OPERATING ACTIVITIES - Rent Income
+// =============================================
 $stmt = $pdo->prepare("SELECT SUM(amount) as total FROM rent_payments WHERE payment_date BETWEEN ? AND ?");
 $stmt->execute([$from_date, $to_date]);
 $rent_income = $stmt->fetch()['total'] ?? 0;
 
-// Operating activities - Expenses
+// =============================================
+// OPERATING ACTIVITIES - Expenses
+// =============================================
 $stmt = $pdo->prepare("SELECT SUM(amount) as total FROM expenses WHERE expense_date BETWEEN ? AND ?");
 $stmt->execute([$from_date, $to_date]);
 $operating_expenses = $stmt->fetch()['total'] ?? 0;
 
-// Salary paid
+// =============================================
+// OPERATING ACTIVITIES - Salary Paid
+// =============================================
 $stmt = $pdo->prepare("SELECT SUM(net_salary) as total FROM payroll WHERE payment_date BETWEEN ? AND ? AND status = 'paid'");
 $stmt->execute([$from_date, $to_date]);
 $salary_paid = $stmt->fetch()['total'] ?? 0;
 
-// Fuel Purchase (COGS)
+// =============================================
+// OPERATING ACTIVITIES - Fuel Purchase (COGS)
+// =============================================
 $stmt = $pdo->prepare("SELECT SUM(total_amount) as total FROM fuel_receivings WHERE receipt_date BETWEEN ? AND ?");
 $stmt->execute([$from_date, $to_date]);
 $fuel_purchases = $stmt->fetch()['total'] ?? 0;
 
-$net_operating = $cash_sales + $rent_income - $operating_expenses - $salary_paid - $fuel_purchases;
+// =============================================
+// OPERATING ACTIVITIES - Item Purchases
+// =============================================
+$stmt = $pdo->prepare("SELECT SUM(total_amount) as total FROM item_purchases WHERE purchase_date BETWEEN ? AND ?");
+$stmt->execute([$from_date, $to_date]);
+$item_purchases = $stmt->fetch()['total'] ?? 0;
+
+// =============================================
+// OPERATING ACTIVITIES - Supplier Payments
+// =============================================
+$stmt = $pdo->prepare("SELECT SUM(amount) as total FROM supplier_payments WHERE payment_date BETWEEN ? AND ?");
+$stmt->execute([$from_date, $to_date]);
+$supplier_payments = $stmt->fetch()['total'] ?? 0;
+
+// =============================================
+// OPERATING ACTIVITIES - Employee Payments
+// =============================================
+$stmt = $pdo->prepare("SELECT SUM(amount) as total FROM employee_payments WHERE payment_date BETWEEN ? AND ?");
+$stmt->execute([$from_date, $to_date]);
+$employee_payments = $stmt->fetch()['total'] ?? 0;
+
+// =============================================
+// TOTAL CASH INFLOWS (All Receipts)
+// =============================================
+$total_cash_inflows = $cash_inflows + $total_cash_sales + $rent_income + $item_sales;
+
+// =============================================
+// TOTAL CASH OUTFLOWS (All Payments)
+// =============================================
+$total_cash_outflows = $cash_outflows + $operating_expenses + $salary_paid + $fuel_purchases + $item_purchases + $supplier_payments + $employee_payments;
+
+// =============================================
+// NET CASH FLOW
+// =============================================
+$net_operating = $total_cash_inflows - $total_cash_outflows;
 
 $settings = $pdo->query("SELECT setting_key, setting_value FROM system_settings")->fetchAll(PDO::FETCH_KEY_PAIR);
 $currency = $settings['currency_symbol'] ?? 'BDT';
@@ -155,21 +230,21 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                 <div class="col-md-4">
                     <div class="stats-card">
                         <i class="fas fa-arrow-down"></i>
-                        <h3><?php echo $currency; ?> <?php echo number_format($cash_inflows, 2); ?></h3>
-                        <p>Cash Inflows (Receipts)</p>
+                        <h3><?php echo $currency; ?> <?php echo number_format($total_cash_inflows, 2); ?></h3>
+                        <p>Total Cash Inflows</p>
                     </div>
                 </div>
                 <div class="col-md-4">
                     <div class="stats-card" style="background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);">
                         <i class="fas fa-arrow-up"></i>
-                        <h3><?php echo $currency; ?> <?php echo number_format($cash_outflows, 2); ?></h3>
-                        <p>Cash Outflows (Payments)</p>
+                        <h3><?php echo $currency; ?> <?php echo number_format($total_cash_outflows, 2); ?></h3>
+                        <p>Total Cash Outflows</p>
                     </div>
                 </div>
                 <div class="col-md-4">
                     <div class="stats-card" style="background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);">
                         <i class="fas fa-chart-line"></i>
-                        <h3><?php echo $currency; ?> <?php echo number_format($cash_inflows - $cash_outflows, 2); ?></h3>
+                        <h3><?php echo $currency; ?> <?php echo number_format($net_operating, 2); ?></h3>
                         <p>Net Cash Flow</p>
                     </div>
                 </div>
@@ -190,41 +265,113 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                                 <tr class="section-header">
                                     <td colspan="2"><strong>A. CASH FLOW FROM OPERATING ACTIVITIES</strong></td>
                                 </tr>
+                                
+                                <!-- Cash Sales - Liquid Fuel -->
                                 <tr class="clickable-row" 
-                                    onclick="window.open('sales_report.php?from_date=<?php echo $from_date; ?>&to_date=<?php echo $to_date; ?>', '_blank')"
+                                    onclick="window.open('reports.php?tab=sales&from_date=<?php echo $from_date; ?>&to_date=<?php echo $to_date; ?>', '_blank')"
                                     title="Click to view sales details">
-                                    <td>Cash Sales</td>
+                                    <td>Cash Sales - Liquid Fuel</td>
                                     <td class="text-end positive"><?php echo $currency; ?> <?php echo number_format($cash_sales, 2); ?></td>
                                 </tr>
+                                
+                                <!-- Cash Sales - CNG -->
                                 <tr class="clickable-row" 
-                                    onclick="window.open('customer_ledger.php?from_date=<?php echo $from_date; ?>&to_date=<?php echo $to_date; ?>', '_blank')"
-                                    title="Click to view credit sales details">
-                                    <td>Credit Sales (Collection)</td>
-                                    <td class="text-end"><?php echo $currency; ?> <?php echo number_format($credit_sales, 2); ?></td>
+                                    onclick="window.open('cng_sales_report.php?from_date=<?php echo $from_date; ?>&to_date=<?php echo $to_date; ?>', '_blank')"
+                                    title="Click to view CNG sales details">
+                                    <td>Cash Sales - CNG</td>
+                                    <td class="text-end positive"><?php echo $currency; ?> <?php echo number_format($cng_cash_sales, 2); ?></td>
                                 </tr>
+                                
+                                <!-- Credit Sales -->
                                 <tr class="clickable-row" 
-                                    onclick="window.open('rental.php?tab=payments', '_blank')"
+                                    onclick="window.open('reports.php?tab=credit&from_date=<?php echo $from_date; ?>&to_date=<?php echo $to_date; ?>', '_blank')"
+                                    title="Click to view credit sales details">
+                                    <td>Credit Sales</td>
+                                    <td class="text-end"><?php echo $currency; ?> <?php echo number_format($total_credit_sales, 2); ?></td>
+                                </tr>
+                                
+                                <!-- Item Sales -->
+                                <tr class="clickable-row" 
+                                    onclick="window.open('item_sales_report.php?from_date=<?php echo $from_date; ?>&to_date=<?php echo $to_date; ?>', '_blank')"
+                                    title="Click to view item sales details">
+                                    <td>Item & Services Sales</td>
+                                    <td class="text-end positive"><?php echo $currency; ?> <?php echo number_format($item_sales, 2); ?></td>
+                                </tr>
+                                
+                                <!-- Rent Income -->
+                                <tr class="clickable-row" 
+                                    onclick="window.open('rental.php?tab=payments&from_date=<?php echo $from_date; ?>&to_date=<?php echo $to_date; ?>', '_blank')"
                                     title="Click to view rent income details">
                                     <td>Rent Income Received</td>
                                     <td class="text-end positive"><?php echo $currency; ?> <?php echo number_format($rent_income, 2); ?></td>
                                 </tr>
-                                <tr>
-                                    <td style="padding-left: 30px;"><strong>Less: Operating Expenses</strong></td>
+                                
+                                <!-- Total Cash Inflows from Operations -->
+                                <tr class="sub-total">
+                                    <td><strong>Total Cash Inflows from Operations</strong></td>
+                                    <td class="text-end positive">
+                                        <strong><?php echo $currency; ?> <?php echo number_format($total_cash_inflows, 2); ?></strong>
+                                    </td>
+                                </tr>
+                                
+                                <!-- Operating Expenses -->
+                                <tr class="clickable-row" 
+                                    onclick="window.open('expenses.php?from_date=<?php echo $from_date; ?>&to_date=<?php echo $to_date; ?>', '_blank')"
+                                    title="Click to view expense details">
+                                    <td style="padding-left: 30px;">Operating Expenses</td>
                                     <td class="text-end negative">(<?php echo $currency; ?> <?php echo number_format($operating_expenses, 2); ?>)</td>
                                 </tr>
+                                
+                                <!-- Salary Paid -->
                                 <tr class="clickable-row" 
-                                    onclick="window.open('payroll.php?tab=payroll', '_blank')"
+                                    onclick="window.open('payroll.php?tab=payroll&from_date=<?php echo $from_date; ?>&to_date=<?php echo $to_date; ?>', '_blank')"
                                     title="Click to view salary details">
-                                    <td style="padding-left: 30px;">Less: Salary Paid</td>
+                                    <td style="padding-left: 30px;">Salary Paid</td>
                                     <td class="text-end negative">(<?php echo $currency; ?> <?php echo number_format($salary_paid, 2); ?>)</td>
                                 </tr>
+                                
+                                <!-- Fuel Purchase -->
                                 <tr class="clickable-row" 
                                     onclick="window.open('fuel_receiving.php?tab=receiving&from_date=<?php echo $from_date; ?>&to_date=<?php echo $to_date; ?>', '_blank')"
                                     title="Click to view fuel purchase details">
-                                    <td style="padding-left: 30px;">Less: Fuel Purchase (COGS)</td>
+                                    <td style="padding-left: 30px;">Fuel Purchase (COGS)</td>
                                     <td class="text-end negative">(<?php echo $currency; ?> <?php echo number_format($fuel_purchases, 2); ?>)</td>
                                 </tr>
+                                
+                                <!-- Item Purchases -->
+                                <tr class="clickable-row" 
+                                    onclick="window.open('item_purchase.php?from_date=<?php echo $from_date; ?>&to_date=<?php echo $to_date; ?>', '_blank')"
+                                    title="Click to view item purchase details">
+                                    <td style="padding-left: 30px;">Item Purchases</td>
+                                    <td class="text-end negative">(<?php echo $currency; ?> <?php echo number_format($item_purchases, 2); ?>)</td>
+                                </tr>
+                                
+                                <!-- Supplier Payments -->
+                                <tr class="clickable-row" 
+                                    onclick="window.open('supplier_payments.php?from_date=<?php echo $from_date; ?>&to_date=<?php echo $to_date; ?>', '_blank')"
+                                    title="Click to view supplier payment details">
+                                    <td style="padding-left: 30px;">Supplier Payments</td>
+                                    <td class="text-end negative">(<?php echo $currency; ?> <?php echo number_format($supplier_payments, 2); ?>)</td>
+                                </tr>
+                                
+                                <!-- Employee Payments -->
+                                <tr class="clickable-row" 
+                                    onclick="window.open('employee_payment.php?from_date=<?php echo $from_date; ?>&to_date=<?php echo $to_date; ?>', '_blank')"
+                                    title="Click to view employee payment details">
+                                    <td style="padding-left: 30px;">Employee Payments</td>
+                                    <td class="text-end negative">(<?php echo $currency; ?> <?php echo number_format($employee_payments, 2); ?>)</td>
+                                </tr>
+                                
+                                <!-- Total Cash Outflows from Operations -->
                                 <tr class="sub-total">
+                                    <td><strong>Total Cash Outflows from Operations</strong></td>
+                                    <td class="text-end negative">
+                                        <strong>(<?php echo $currency; ?> <?php echo number_format($total_cash_outflows, 2); ?>)</strong>
+                                    </td>
+                                </tr>
+                                
+                                <!-- Net Cash from Operating Activities -->
+                                <tr class="sub-total" style="background-color: #d4edda;">
                                     <td><strong>Net Cash from Operating Activities</strong></td>
                                     <td class="text-end <?php echo $net_operating >= 0 ? 'positive' : 'negative'; ?>">
                                         <strong><?php echo $currency; ?> <?php echo number_format($net_operating, 2); ?></strong>
@@ -276,19 +423,19 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                     <div class="row mt-4">
                         <div class="col-md-3">
                             <div class="alert alert-success text-center">
-                                <strong>Cash Inflows</strong><br>
-                                <span class="h4"><?php echo $currency; ?> <?php echo number_format($cash_inflows, 2); ?></span>
+                                <strong>Total Inflows</strong><br>
+                                <span class="h4"><?php echo $currency; ?> <?php echo number_format($total_cash_inflows, 2); ?></span>
                             </div>
                         </div>
                         <div class="col-md-3">
                             <div class="alert alert-danger text-center">
-                                <strong>Cash Outflows</strong><br>
-                                <span class="h4"><?php echo $currency; ?> <?php echo number_format($cash_outflows, 2); ?></span>
+                                <strong>Total Outflows</strong><br>
+                                <span class="h4"><?php echo $currency; ?> <?php echo number_format($total_cash_outflows, 2); ?></span>
                             </div>
                         </div>
                         <div class="col-md-3">
                             <div class="alert alert-info text-center">
-                                <strong>Operating Cash Flow</strong><br>
+                                <strong>Net Cash Flow</strong><br>
                                 <span class="h4"><?php echo $currency; ?> <?php echo number_format($net_operating, 2); ?></span>
                             </div>
                         </div>
@@ -303,5 +450,8 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
             </div>
         </div>
     </div>
+    
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
 </body>
 </html>
