@@ -443,6 +443,11 @@ $user_role = $user['role'] ?? 'guest';
             <li class="nav-item <?php echo isset($_GET['tab']) && $_GET['tab'] == 'users' ? 'active' : ''; ?>">
                 <a class="nav-link" href="settings.php?tab=users"><i class="fas fa-user-plus"></i> <span>Manage Users</span></a>
             </li>
+            <li class="nav-item">
+                <a class="nav-link" href="db_backup.php">
+                    <i class="fas fa-database"></i> Database Backup
+                </a>
+            </li>
             <?php endif; ?>
         </div>
         <?php endif; ?>
