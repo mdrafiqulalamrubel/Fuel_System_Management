@@ -443,9 +443,20 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                                     <td><?php echo $currency; ?> <?php echo number_format($emp['basic_salary'], 2); ?></td>
                                     <td><?php echo htmlspecialchars($emp['phone']); ?></td>
                                     <td>
-                                        <button class="btn btn-sm btn-warning" onclick="editEmployee(<?php echo $emp['id']; ?>, '<?php echo addslashes($emp['employee_id']); ?>', '<?php echo addslashes($emp['full_name']); ?>', '<?php echo addslashes($emp['designation']); ?>', '<?php echo addslashes($emp['department']); ?>', '<?php echo $emp['joining_date']; ?>', <?php echo $emp['basic_salary']; ?>, '<?php echo addslashes($emp['phone']); ?>', '<?php echo addslashes($emp['address']); ?>', '<?php echo addslashes($emp['bank_account_no']); ?>')">
-                                            <i class="fas fa-edit"></i>
-                                        </button>
+                                        <button class="btn btn-sm btn-warning edit-employee-btn" 
+                                        data-id="<?php echo $emp['id']; ?>"
+                                        data-emp-id="<?php echo htmlspecialchars($emp['employee_id']); ?>"
+                                        data-name="<?php echo htmlspecialchars($emp['full_name']); ?>"
+                                        data-designation="<?php echo htmlspecialchars($emp['designation']); ?>"
+                                        data-department="<?php echo htmlspecialchars($emp['department']); ?>"
+                                        data-joining="<?php echo $emp['joining_date']; ?>"
+                                        data-salary="<?php echo $emp['basic_salary']; ?>"
+                                        data-phone="<?php echo htmlspecialchars($emp['phone']); ?>"
+                                        data-address="<?php echo htmlspecialchars($emp['address']); ?>"
+                                        data-bank="<?php echo htmlspecialchars($emp['bank_account_no']); ?>">
+                                        <i class="fas fa-edit"></i>
+                                    </button>
+                                            
                                         <a href="?delete_id=<?php echo $emp['id']; ?>&tab=employees" class="btn btn-sm btn-danger" onclick="return confirm('Deactivate this employee?')"><i class="fas fa-trash"></i></a>
                                     </td>
                                 </tr>
@@ -815,21 +826,23 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                 pageLength: 25,
                 language: { search: "Search:", lengthMenu: "Show _MENU_ entries", info: "Showing _START_ to _END_ of _TOTAL_ entries" }
             });
+            
+            // Edit Employee - using data attributes instead of inline onclick
+            $(document).on('click', '.edit-employee-btn', function() {
+                var btn = $(this);
+                document.getElementById('edit_id').value = btn.data('id');
+                document.getElementById('edit_emp_id').value = btn.data('emp-id');
+                document.getElementById('edit_full_name').value = btn.data('name');
+                document.getElementById('edit_designation').value = btn.data('designation');
+                document.getElementById('edit_department').value = btn.data('department');
+                document.getElementById('edit_joining_date').value = btn.data('joining');
+                document.getElementById('edit_basic_salary').value = btn.data('salary');
+                document.getElementById('edit_phone').value = btn.data('phone');
+                document.getElementById('edit_address').value = btn.data('address');
+                document.getElementById('edit_bank_account').value = btn.data('bank');
+                new bootstrap.Modal(document.getElementById('editEmployeeModal')).show();
+            });
         });
-        
-        function editEmployee(id, empId, name, designation, department, joiningDate, salary, phone, address, bankAccount) {
-            document.getElementById('edit_id').value = id;
-            document.getElementById('edit_emp_id').value = empId;
-            document.getElementById('edit_full_name').value = name;
-            document.getElementById('edit_designation').value = designation;
-            document.getElementById('edit_department').value = department;
-            document.getElementById('edit_joining_date').value = joiningDate;
-            document.getElementById('edit_basic_salary').value = salary;
-            document.getElementById('edit_phone').value = phone;
-            document.getElementById('edit_address').value = address;
-            document.getElementById('edit_bank_account').value = bankAccount;
-            new bootstrap.Modal(document.getElementById('editEmployeeModal')).show();
-        }
         
         function paySalary(id, name, amount) {
             document.getElementById('payroll_id').value = id;
