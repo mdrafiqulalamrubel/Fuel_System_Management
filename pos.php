@@ -121,11 +121,57 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['make_sale'])) {
     $card_number = isset($_POST['card_number']) ? trim($_POST['card_number']) : '';
     $card_holder_name = isset($_POST['card_holder_name']) ? trim($_POST['card_holder_name']) : '';
     $transaction_id = isset($_POST['transaction_id']) ? trim($_POST['transaction_id']) : '';
-    $customer_name = isset($_POST['customer_name']) ? $_POST['customer_name'] : '';
-    $customer_phone = isset($_POST['customer_phone']) ? $_POST['customer_phone'] : '';
+    
+    // =============================================
+    // CUSTOMER DATA HANDLING
+    // =============================================
+    $customer_id = !empty($_POST['customer_id']) ? intval($_POST['customer_id']) : null;
+    $customer_name = isset($_POST['customer_name']) ? trim($_POST['customer_name']) : '';
+    $customer_phone = isset($_POST['customer_phone']) ? trim($_POST['customer_phone']) : '';
+    
+    // If customer ID is provided but name is empty, fetch from database
+    if($customer_id && empty($customer_name)) {
+        $stmt = $pdo->prepare("SELECT customer_name, phone FROM customers WHERE id = ?");
+        $stmt->execute([$customer_id]);
+        $cust = $stmt->fetch();
+        if($cust) {
+            $customer_name = $cust['customer_name'];
+            $customer_phone = $cust['phone'] ?? '';
+        }
+    }
+    
+    // If no customer ID but name is provided, try to find existing customer
+    if(empty($customer_id) && !empty($customer_name)) {
+        if(!empty($customer_phone)) {
+            $stmt = $pdo->prepare("SELECT id FROM customers WHERE phone = ?");
+            $stmt->execute([$customer_phone]);
+            $existing = $stmt->fetch();
+            if($existing) {
+                $customer_id = $existing['id'];
+            }
+        }
+        if(empty($customer_id)) {
+            $stmt = $pdo->prepare("SELECT id FROM customers WHERE customer_name = ?");
+            $stmt->execute([$customer_name]);
+            $existing = $stmt->fetch();
+            if($existing) {
+                $customer_id = $existing['id'];
+            }
+        }
+    }
+    
+    // For credit sales, if customer doesn't exist, create one
+    if(($sale_type == 'credit' || !empty($customer_name)) && empty($customer_id) && !empty($customer_name)) {
+        $stmt = $pdo->prepare("INSERT INTO customers (customer_code, customer_name, phone, credit_limit) VALUES (?, ?, ?, ?)");
+        $customer_code = 'CUST-' . date('Ymd') . rand(100, 999);
+        $stmt->execute([$customer_code, $customer_name, $customer_phone, 50000]);
+        $customer_id = $pdo->lastInsertId();
+    }
+    // =============================================
+    
     $vehicle_number = isset($_POST['vehicle_number']) ? trim($_POST['vehicle_number']) : '';
     $remarks = isset($_POST['remarks']) ? trim($_POST['remarks']) : '';
-    $input_type = $_POST['input_type'] ?? 'liters'; // 'liters' or 'amount'
+    $input_type = $_POST['input_type'] ?? 'liters';
     
     // Calculate quantity based on input type
     if($input_type == 'amount') {
@@ -151,65 +197,42 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['make_sale'])) {
     // =============================================
     // CHECK FOR CUSTOMER ADVANCE BALANCE
     // =============================================
-
     $advance_used = 0;
     $advance_payment_id = null;
 
-    if($sale_type == 'credit' && !empty($customer_name)) {
-        // First get or create customer ID if not set
-        if(empty($customer_id)) {
-            if(!empty($customer_phone)) {
-                $stmt = $pdo->prepare("SELECT id FROM customers WHERE phone = ?");
-                $stmt->execute([$customer_phone]);
-                $existing = $stmt->fetch();
-                if($existing) {
-                    $customer_id = $existing['id'];
-                }
-            }
-            if(empty($customer_id) && !empty($customer_name)) {
-                $stmt = $pdo->prepare("SELECT id FROM customers WHERE customer_name = ?");
-                $stmt->execute([$customer_name]);
-                $existing = $stmt->fetch();
-                if($existing) {
-                    $customer_id = $existing['id'];
-                }
-            }
-        }
+    if($sale_type == 'credit' && $customer_id) {
+        $stmt = $pdo->prepare("SELECT advance_balance FROM customers WHERE id = ?");
+        $stmt->execute([$customer_id]);
+        $advance_balance = $stmt->fetch()['advance_balance'] ?? 0;
         
-        if($customer_id) {
-            $stmt = $pdo->prepare("SELECT advance_balance FROM customers WHERE id = ?");
-            $stmt->execute([$customer_id]);
-            $advance_balance = $stmt->fetch()['advance_balance'] ?? 0;
+        if($advance_balance > 0) {
+            $advance_used = min($advance_balance, $total_amount);
             
-            if($advance_balance > 0) {
-                $advance_used = min($advance_balance, $total_amount);
+            if($advance_used > 0) {
+                $stmt = $pdo->prepare("UPDATE customers SET advance_balance = advance_balance - ? WHERE id = ?");
+                $stmt->execute([$advance_used, $customer_id]);
                 
-                if($advance_used > 0) {
-                    $stmt = $pdo->prepare("UPDATE customers SET advance_balance = advance_balance - ? WHERE id = ?");
-                    $stmt->execute([$advance_used, $customer_id]);
+                $stmt = $pdo->prepare("SELECT id FROM advance_payments_customer WHERE customer_id = ? AND balance_amount > 0 ORDER BY advance_date LIMIT 1");
+                $stmt->execute([$customer_id]);
+                $advance_record = $stmt->fetch();
+                if($advance_record) {
+                    $advance_payment_id = $advance_record['id'];
+                    $stmt = $pdo->prepare("UPDATE advance_payments_customer SET used_amount = used_amount + ?, balance_amount = balance_amount - ? WHERE id = ?");
+                    $stmt->execute([$advance_used, $advance_used, $advance_payment_id]);
                     
-                    $stmt = $pdo->prepare("SELECT id FROM advance_payments_customer WHERE customer_id = ? AND balance_amount > 0 ORDER BY advance_date LIMIT 1");
-                    $stmt->execute([$customer_id]);
-                    $advance_record = $stmt->fetch();
-                    if($advance_record) {
-                        $advance_payment_id = $advance_record['id'];
-                        $stmt = $pdo->prepare("UPDATE advance_payments_customer SET used_amount = used_amount + ?, balance_amount = balance_amount - ? WHERE id = ?");
-                        $stmt->execute([$advance_used, $advance_used, $advance_payment_id]);
-                        
-                        $stmt = $pdo->prepare("SELECT balance_amount FROM advance_payments_customer WHERE id = ?");
+                    $stmt = $pdo->prepare("SELECT balance_amount FROM advance_payments_customer WHERE id = ?");
+                    $stmt->execute([$advance_payment_id]);
+                    $new_balance = $stmt->fetch()['balance_amount'];
+                    if($new_balance <= 0) {
+                        $stmt = $pdo->prepare("UPDATE advance_payments_customer SET status = 'fully_used' WHERE id = ?");
                         $stmt->execute([$advance_payment_id]);
-                        $new_balance = $stmt->fetch()['balance_amount'];
-                        if($new_balance <= 0) {
-                            $stmt = $pdo->prepare("UPDATE advance_payments_customer SET status = 'fully_used' WHERE id = ?");
-                            $stmt->execute([$advance_payment_id]);
-                        }
                     }
-                    
-                    $total_amount = $total_amount - $advance_used;
-                    $subtotal = $total_amount;
-                    $received = isset($_POST['received']) ? floatval($_POST['received']) : $total_amount;
-                    $change = $received - $total_amount;
                 }
+                
+                $total_amount = $total_amount - $advance_used;
+                $subtotal = $total_amount;
+                $received = isset($_POST['received']) ? floatval($_POST['received']) : $total_amount;
+                $change = $received - $total_amount;
             }
         }
     }
@@ -240,36 +263,20 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['make_sale'])) {
             throw new Exception("Insufficient stock! Available: " . number_format($current_stock, 2) . " Liters");
         }
         
-        // Insert sale with payment method fields
+        // Insert sale with customer_id properly
         $stmt = $pdo->prepare("
         INSERT INTO sales (
-            invoice_no, 
-            shift_id, 
-            nozzle_id, 
-            operator_id,
-            customer_name, 
-            customer_phone, 
-            sale_type,
-            payment_method, 
-            card_number, 
-            card_holder_name, 
-            transaction_id,
-            product_id, 
-            quantity_liters, 
-            unit_price,
-            subtotal, 
-            vat_amount, 
-            tax_amount,
-            total_amount, 
-            received_amount, 
-            change_amount,
-            advance_used, 
-            advance_payment_id,
-            vehicle_number, 
-            remarks
+            invoice_no, shift_id, nozzle_id, operator_id,
+            customer_id, customer_name, customer_phone, sale_type,
+            payment_method, card_number, card_holder_name, transaction_id,
+            product_id, quantity_liters, unit_price,
+            subtotal, vat_amount, tax_amount,
+            total_amount, received_amount, change_amount,
+            advance_used, advance_payment_id,
+            vehicle_number, remarks
         ) VALUES (
             ?, ?, ?, ?,
-            ?, ?, ?,
+            ?, ?, ?, ?,
             ?, ?, ?, ?,
             ?, ?, ?,
             ?, ?, ?,
@@ -280,30 +287,14 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['make_sale'])) {
     ");
 
     $stmt->execute([
-        $invoice_no, 
-        $shift_id, 
-        $nozzle_id, 
-        $user['id'],
-        $customer_name, 
-        $customer_phone, 
-        $sale_type,
-        $payment_method, 
-        $card_number, 
-        $card_holder_name, 
-        $transaction_id,
-        $product_id, 
-        $quantity, 
-        $unit_price,
-        $subtotal, 
-        $vat_amount, 
-        $tax_amount,
-        $total_amount, 
-        $received, 
-        $change,
-        $advance_used, 
-        $advance_payment_id,
-        $vehicle_number, 
-        $remarks
+        $invoice_no, $shift_id, $nozzle_id, $user['id'],
+        $customer_id, $customer_name, $customer_phone, $sale_type,
+        $payment_method, $card_number, $card_holder_name, $transaction_id,
+        $product_id, $quantity, $unit_price,
+        $subtotal, $vat_amount, $tax_amount,
+        $total_amount, $received, $change,
+        $advance_used, $advance_payment_id,
+        $vehicle_number, $remarks
     ]);
         
         $sale_id = $pdo->lastInsertId();
@@ -322,6 +313,61 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['make_sale'])) {
         ");
         $stmt->execute([$product_id, $tank_id, $invoice_no, $stock_reduction, $new_balance]);
         
+        // =============================================
+        // UPDATE CUSTOMER BALANCE FOR ALL SALES
+        // =============================================
+        if($customer_id) {
+            // Update last purchase date
+            try {
+                $stmt = $pdo->prepare("UPDATE customers SET last_purchase_date = NOW() WHERE id = ?");
+                $stmt->execute([$customer_id]);
+            } catch(PDOException $e) {
+                // Column might not exist, skip
+            }
+            
+            // Insert into customer_transactions for tracking
+            try {
+                // Check if customer_transactions table exists
+                $stmt = $pdo->query("SHOW TABLES LIKE 'customer_transactions'");
+                if($stmt->rowCount() > 0) {
+                    $balance = $sale_type == 'credit' ? $total_amount : 0;
+                    $stmt = $pdo->prepare("
+                        INSERT INTO customer_transactions (
+                            customer_id, transaction_date, transaction_type, reference_no,
+                            sale_type, amount, debit, credit, balance, notes
+                        ) VALUES (?, NOW(), 'sale', ?, ?, ?, ?, ?, ?, ?)
+                    ");
+                    $stmt->execute([
+                        $customer_id,
+                        $invoice_no,
+                        $sale_type,
+                        $total_amount,
+                        $sale_type == 'credit' ? $total_amount : 0,  // debit for credit sales
+                        $sale_type == 'credit' ? 0 : $total_amount, // credit for cash sales
+                        $sale_type == 'credit' ? $total_amount : 0, // balance for credit sales
+                        $remarks
+                    ]);
+                }
+            } catch(PDOException $e) {
+                // Table might not exist, skip
+            }
+            
+            // For credit sales, update current_balance
+            if($sale_type == 'credit') {
+                $stmt = $pdo->prepare("UPDATE customers SET current_balance = current_balance + ? WHERE id = ?");
+                $stmt->execute([$total_amount, $customer_id]);
+            } else {
+                // For cash sales, update total_purchases if column exists
+                try {
+                    $stmt = $pdo->prepare("UPDATE customers SET total_purchases = COALESCE(total_purchases, 0) + ? WHERE id = ?");
+                    $stmt->execute([$total_amount, $customer_id]);
+                } catch(PDOException $e) {
+                    // Column might not exist, skip
+                }
+            }
+        }
+        // =============================================
+        
         // Accounting entries
         $stmt = $pdo->query("SELECT id FROM chart_of_accounts WHERE account_code = '1300' LIMIT 1");
         $ar_account = $stmt->fetch();
@@ -330,70 +376,62 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['make_sale'])) {
         $stmt = $pdo->query("SELECT id FROM chart_of_accounts WHERE account_code = '1000' LIMIT 1");
         $cash_account = $stmt->fetch();
         
-        $customer_id = null;
-        
         // Handle Credit Sale
         if($sale_type == 'credit') {
-            if(!empty($customer_phone)) {
-                $stmt = $pdo->prepare("SELECT id FROM customers WHERE phone = ?");
-                $stmt->execute([$customer_phone]);
-                $existing = $stmt->fetch();
-                if($existing) {
-                    $customer_id = $existing['id'];
-                    $stmt = $pdo->prepare("UPDATE customers SET customer_name = ? WHERE id = ?");
-                    $stmt->execute([$customer_name, $customer_id]);
-                } else {
+            // If customer_id is not set but we have customer_name, create or find customer
+            if(empty($customer_id) && !empty($customer_name)) {
+                if(!empty($customer_phone)) {
+                    $stmt = $pdo->prepare("SELECT id FROM customers WHERE phone = ?");
+                    $stmt->execute([$customer_phone]);
+                    $existing = $stmt->fetch();
+                    if($existing) {
+                        $customer_id = $existing['id'];
+                    }
+                }
+                if(empty($customer_id)) {
                     $stmt = $pdo->prepare("INSERT INTO customers (customer_code, customer_name, phone, credit_limit) VALUES (?, ?, ?, ?)");
                     $customer_code = 'CUST-' . date('Ymd') . rand(100, 999);
                     $stmt->execute([$customer_code, $customer_name, $customer_phone, 50000]);
                     $customer_id = $pdo->lastInsertId();
                 }
-            } else {
-                $stmt = $pdo->prepare("SELECT id FROM customers WHERE customer_name = ?");
-                $stmt->execute([$customer_name]);
-                $existing = $stmt->fetch();
-                if($existing) {
-                    $customer_id = $existing['id'];
-                } else {
-                    $stmt = $pdo->prepare("INSERT INTO customers (customer_code, customer_name, credit_limit) VALUES (?, ?, ?)");
-                    $customer_code = 'CUST-' . date('Ymd') . rand(100, 999);
-                    $stmt->execute([$customer_code, $customer_name, 50000]);
-                    $customer_id = $pdo->lastInsertId();
-                }
             }
             
-            $due_date = date('Y-m-d', strtotime('+30 days'));
-            $stmt = $pdo->prepare("
-                INSERT INTO credit_sales (sale_id, customer_id, invoice_no, sale_date, due_date, total_amount, paid_amount, balance_due, status) 
-                VALUES (?, ?, ?, CURDATE(), ?, ?, 0, ?, 'pending')
-            ");
-            $stmt->execute([$sale_id, $customer_id, $invoice_no, $due_date, $total_amount, $total_amount]);
-            
-            $stmt = $pdo->prepare("UPDATE customers SET current_balance = current_balance + ? WHERE id = ?");
-            $stmt->execute([$total_amount, $customer_id]);
-            
-            if($ar_account && $sales_account) {
-                $voucher_no = 'CREDIT-' . date('YmdHis') . rand(100, 999);
-                $narration = "Credit sale to $customer_name - Invoice: $invoice_no - Amount: $total_amount";
+            if($customer_id) {
+                $due_date = date('Y-m-d', strtotime('+30 days'));
+                $stmt = $pdo->prepare("
+                    INSERT INTO credit_sales (sale_id, customer_id, invoice_no, sale_date, due_date, total_amount, paid_amount, balance_due, status) 
+                    VALUES (?, ?, ?, CURDATE(), ?, ?, 0, ?, 'pending')
+                ");
+                $stmt->execute([$sale_id, $customer_id, $invoice_no, $due_date, $total_amount, $total_amount]);
                 
-                $stmt = $pdo->prepare("INSERT INTO vouchers (voucher_no, voucher_type, date, narration, created_by, status) VALUES (?, 'journal', CURDATE(), ?, ?, 'approved')");
-                $stmt->execute([$voucher_no, $narration, $user['id']]);
-                $voucher_id = $pdo->lastInsertId();
+                // Update balance again (in case it was already updated above)
+                $stmt = $pdo->prepare("UPDATE customers SET current_balance = current_balance + ? WHERE id = ?");
+                $stmt->execute([$total_amount, $customer_id]);
                 
-                $stmt = $pdo->prepare("INSERT INTO voucher_items (voucher_id, account_id, debit_amount, credit_amount, description) VALUES 
-                    (?, ?, ?, ?, ?),
-                    (?, ?, ?, ?, ?)");
-                $stmt->execute([
-                    $voucher_id, $ar_account['id'], $total_amount, 0, "Credit sale to $customer_name - Invoice: $invoice_no",
-                    $voucher_id, $sales_account['id'], 0, $total_amount, "Fuel sale revenue - Invoice: $invoice_no"
-                ]);
+                if($ar_account && $sales_account) {
+                    $voucher_no = 'CREDIT-' . date('YmdHis') . rand(100, 999);
+                    $narration = "Credit sale to $customer_name - Invoice: $invoice_no - Amount: $total_amount";
+                    
+                    $stmt = $pdo->prepare("INSERT INTO vouchers (voucher_no, voucher_type, date, narration, created_by, status) VALUES (?, 'journal', CURDATE(), ?, ?, 'approved')");
+                    $stmt->execute([$voucher_no, $narration, $user['id']]);
+                    $voucher_id = $pdo->lastInsertId();
+                    
+                    $stmt = $pdo->prepare("INSERT INTO voucher_items (voucher_id, account_id, debit_amount, credit_amount, description) VALUES 
+                        (?, ?, ?, ?, ?),
+                        (?, ?, ?, ?, ?)");
+                    $stmt->execute([
+                        $voucher_id, $ar_account['id'], $total_amount, 0, "Credit sale to $customer_name - Invoice: $invoice_no",
+                        $voucher_id, $sales_account['id'], 0, $total_amount, "Fuel sale revenue - Invoice: $invoice_no"
+                    ]);
+                }
             }
         } 
         // Handle Cash Sale
         else if($sale_type == 'cash') {
             if($cash_account && $sales_account) {
                 $voucher_no = 'CASH-' . date('YmdHis') . rand(100, 999);
-                $narration = "Cash sale - Invoice: $invoice_no - Amount: $total_amount - Payment: $payment_method";
+                $customer_info = $customer_id ? " - Customer: $customer_name" : "";
+                $narration = "Cash sale$customer_info - Invoice: $invoice_no - Amount: $total_amount - Payment: $payment_method";
                 
                 $stmt = $pdo->prepare("INSERT INTO vouchers (voucher_no, voucher_type, date, narration, created_by, status) VALUES (?, 'receipt', CURDATE(), ?, ?, 'approved')");
                 $stmt->execute([$voucher_no, $narration, $user['id']]);
@@ -421,6 +459,7 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['make_sale'])) {
         
         $_SESSION['last_invoice'] = [
             'invoice_no' => $invoice_no,
+            'customer_id' => $customer_id,
             'customer_name' => $customer_name,
             'customer_phone' => $customer_phone,
             'vehicle_number' => $vehicle_number,
@@ -461,6 +500,11 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['make_sale'])) {
 $settings = $pdo->query("SELECT setting_key, setting_value FROM system_settings")->fetchAll(PDO::FETCH_KEY_PAIR);
 $currency = $settings['currency_symbol'] ?? 'BDT';
 ?>
+<!-- HTML section remains the same -->
+
+
+<!-- HTML section remains the same as before with the customer selection -->
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -679,6 +723,63 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                                     </div>
                                 </div>
                                 
+                                <!-- ============================================= -->
+                                <!-- CUSTOMER SELECTION - ADDED -->
+                                <!-- ============================================= -->
+                                <div class="row">
+                                    <div class="col-md-12">
+                                        <div class="card mb-3" style="background: #f8f9fa; border: 1px solid #dee2e6;">
+                                            <div class="card-body p-2">
+                                                <div class="row">
+                                                    <div class="col-md-5">
+                                                        <div class="mb-2">
+                                                            <label><i class="fas fa-user"></i> Customer</label>
+                                                            <select name="customer_id" id="customer_id" class="form-control form-control-sm" onchange="loadCustomerData(this)">
+                                                                <option value="">-- Walk-in Customer --</option>
+                                                                <?php 
+                                                                $customers = $pdo->query("SELECT * FROM customers WHERE is_active = 1 ORDER BY customer_name")->fetchAll();
+                                                                foreach($customers as $c): 
+                                                                    $net = ($c['current_balance'] ?? 0) - ($c['advance_balance'] ?? 0);
+                                                                    $status = $net > 0 ? 'Due: ' . number_format($net, 2) : ($net < 0 ? 'Adv: ' . number_format(abs($net), 2) : 'Settled');
+                                                                ?>
+                                                                    <option value="<?php echo $c['id']; ?>" 
+                                                                            data-name="<?php echo $c['customer_name']; ?>"
+                                                                            data-phone="<?php echo $c['phone']; ?>"
+                                                                            data-address="<?php echo $c['address']; ?>"
+                                                                            data-balance="<?php echo $c['current_balance'] ?? 0; ?>"
+                                                                            data-advance="<?php echo $c['advance_balance'] ?? 0; ?>">
+                                                                        <?php echo $c['customer_name']; ?> (<?php echo $c['customer_code']; ?>) - <?php echo $status; ?>
+                                                                    </option>
+                                                                <?php endforeach; ?>
+                                                            </select>
+                                                        </div>
+                                                    </div>
+                                                    <div class="col-md-4">
+                                                        <div class="mb-2">
+                                                            <label><i class="fas fa-user-tag"></i> Customer Name</label>
+                                                            <input type="text" name="customer_name" id="customer_name" class="form-control form-control-sm" placeholder="Enter name or select above">
+                                                        </div>
+                                                    </div>
+                                                    <div class="col-md-3">
+                                                        <div class="mb-2">
+                                                            <label><i class="fas fa-phone"></i> Phone</label>
+                                                            <input type="text" name="customer_phone" id="customer_phone" class="form-control form-control-sm" placeholder="Enter phone">
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                                <div id="customerInfo" style="display:none; background: #e8f4f8; padding: 8px 12px; border-radius: 6px; margin-top: 5px;">
+                                                    <small>
+                                                        <i class="fas fa-info-circle"></i> 
+                                                        Balance: <span id="custBalance">0.00</span> | 
+                                                        Advance: <span id="custAdvance">0.00</span> | 
+                                                        <span id="custAddress"></span>
+                                                    </small>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                                
                                 <input type="hidden" name="tank_id" id="tank_id">
                                 <input type="hidden" name="unit_type" id="unit_type" value="liters">
                                 
@@ -826,13 +927,13 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                                         <div class="col-md-6">
                                             <div class="mb-3">
                                                 <label>Customer Name *</label>
-                                                <input type="text" name="customer_name" id="customer_name" class="form-control">
+                                                <input type="text" name="customer_name_credit" id="customer_name_credit" class="form-control">
                                             </div>
                                         </div>
                                         <div class="col-md-6">
                                             <div class="mb-3">
                                                 <label>Customer Phone</label>
-                                                <input type="text" name="customer_phone" id="customer_phone" class="form-control">
+                                                <input type="text" name="customer_phone_credit" id="customer_phone_credit" class="form-control">
                                             </div>
                                         </div>
                                     </div>
@@ -979,6 +1080,33 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
         setInterval(updateCurrentTime, 1000);
 
         // =============================================
+        // CUSTOMER SELECTION FUNCTIONS - ADDED
+        // =============================================
+        function loadCustomerData(select) {
+            var option = select.options[select.selectedIndex];
+            if(option.value) {
+                document.getElementById('customer_name').value = option.dataset.name || '';
+                document.getElementById('customer_phone').value = option.dataset.phone || '';
+                document.getElementById('custBalance').innerText = parseFloat(option.dataset.balance || 0).toFixed(2);
+                document.getElementById('custAdvance').innerText = parseFloat(option.dataset.advance || 0).toFixed(2);
+                document.getElementById('custAddress').innerHTML = option.dataset.address ? '| <i class="fas fa-map-marker-alt"></i> ' + option.dataset.address : '';
+                document.getElementById('customerInfo').style.display = 'block';
+            } else {
+                document.getElementById('customer_name').value = '';
+                document.getElementById('customer_phone').value = '';
+                document.getElementById('customerInfo').style.display = 'none';
+            }
+        }
+        
+        // Auto-fill customer name when typing
+        document.getElementById('customer_name').addEventListener('input', function() {
+            if(this.value.trim()) {
+                document.getElementById('customer_id').value = '';
+                document.getElementById('customerInfo').style.display = 'none';
+            }
+        });
+
+        // =============================================
         // PAYMENT METHOD FUNCTIONS
         // =============================================
         function selectPaymentMethod(method) {
@@ -1016,7 +1144,7 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                 paymentSection.style.display = 'none';
                 customerFields.style.display = 'block';
                 cashFields.style.display = 'none';
-                document.getElementById('customer_name').setAttribute('required', 'required');
+                document.getElementById('customer_name_credit').setAttribute('required', 'required');
                 document.getElementById('received').value = 0;
                 // Set payment method to credit
                 document.getElementById('payment_method').value = 'credit';
@@ -1024,7 +1152,7 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                 paymentSection.style.display = 'block';
                 customerFields.style.display = 'none';
                 cashFields.style.display = 'block';
-                document.getElementById('customer_name').removeAttribute('required');
+                document.getElementById('customer_name_credit').removeAttribute('required');
                 document.getElementById('received').value = 0;
                 // Reset payment method to cash
                 document.getElementById('payment_method').value = 'cash';
@@ -1237,7 +1365,7 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
             
             let saleType = document.getElementById('sale_type').value;
             if(saleType == 'credit') {
-                let customerName = document.getElementById('customer_name').value.trim();
+                let customerName = document.getElementById('customer_name_credit').value.trim();
                 if(!customerName) {
                     e.preventDefault();
                     alert('Please enter customer name for credit sale');

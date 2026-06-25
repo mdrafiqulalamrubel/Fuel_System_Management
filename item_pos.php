@@ -128,9 +128,82 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['process_sale'])) {
     if(empty($cart)) {
         $error = "Cart is empty! Please add items first.";
     } else {
+        // =============================================
+        // FIXED: CUSTOMER DATA HANDLING FOR ITEM_POS
+        // =============================================
         $customer_id = !empty($_POST['customer_id']) ? intval($_POST['customer_id']) : null;
-        $customer_name = $_POST['customer_name'] ?? '';
-        $customer_phone = $_POST['customer_phone'] ?? '';
+        $customer_name = isset($_POST['customer_name']) ? trim($_POST['customer_name']) : '';
+        $customer_phone = isset($_POST['customer_phone']) ? trim($_POST['customer_phone']) : '';
+
+        // If customer ID is provided but name is empty, fetch from database
+        if($customer_id && empty($customer_name)) {
+            $stmt = $pdo->prepare("SELECT customer_name, phone FROM customers WHERE id = ?");
+            $stmt->execute([$customer_id]);
+            $cust = $stmt->fetch();
+            if($cust) {
+                $customer_name = $cust['customer_name'];
+                $customer_phone = $cust['phone'] ?? '';
+            }
+        }
+
+        // If no customer ID but name is provided, try to find existing customer
+        if(empty($customer_id) && !empty($customer_name)) {
+            if(!empty($customer_phone)) {
+                $stmt = $pdo->prepare("SELECT id FROM customers WHERE phone = ?");
+                $stmt->execute([$customer_phone]);
+                $existing = $stmt->fetch();
+                if($existing) {
+                    $customer_id = $existing['id'];
+                }
+            }
+            if(empty($customer_id)) {
+                $stmt = $pdo->prepare("SELECT id FROM customers WHERE customer_name = ?");
+                $stmt->execute([$customer_name]);
+                $existing = $stmt->fetch();
+                if($existing) {
+                    $customer_id = $existing['id'];
+                }
+            }
+        }
+
+        // For credit sales, if customer doesn't exist, create one
+        // For credit sales with customer
+        if($sale_type == 'credit' && !empty($customer_name)) {
+            // If customer_id is not set but we have customer_name, create or find customer
+            if(empty($customer_id) && !empty($customer_name)) {
+                if(!empty($customer_phone)) {
+                    $stmt = $pdo->prepare("SELECT id FROM customers WHERE phone = ?");
+                    $stmt->execute([$customer_phone]);
+                    $existing = $stmt->fetch();
+                    if($existing) {
+                        $customer_id = $existing['id'];
+                        $stmt = $pdo->prepare("UPDATE customers SET customer_name = ? WHERE id = ?");
+                        $stmt->execute([$customer_name, $customer_id]);
+                    }
+                }
+                if(empty($customer_id)) {
+                    $stmt = $pdo->prepare("SELECT id FROM customers WHERE customer_name = ?");
+                    $stmt->execute([$customer_name]);
+                    $existing = $stmt->fetch();
+                    if($existing) {
+                        $customer_id = $existing['id'];
+                    } else {
+                        $stmt = $pdo->prepare("INSERT INTO customers (customer_code, customer_name, phone, credit_limit) VALUES (?, ?, ?, ?)");
+                        $customer_code = 'CUST-' . date('Ymd') . rand(100, 999);
+                        $stmt->execute([$customer_code, $customer_name, $customer_phone, 50000]);
+                        $customer_id = $pdo->lastInsertId();
+                    }
+                }
+            }
+            
+            if($customer_id) {
+                // Update customer balance for credit sale
+                $stmt = $pdo->prepare("UPDATE customers SET current_balance = current_balance + ? WHERE id = ?");
+                $stmt->execute([$total_amount, $customer_id]);
+            }
+        }
+        // =============================================
+        
         $sale_type = $_POST['sale_type'] ?? 'cash';
         
         // =============================================
@@ -193,7 +266,7 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['process_sale'])) {
                 }
                 
                 // =============================================
-                // INSERT SALE WITH PAYMENT METHOD FIELDS
+                // INSERT SALE WITH PAYMENT METHOD FIELDS AND CUSTOMER FIELDS
                 // =============================================
                 $stmt = $pdo->prepare("
                     INSERT INTO item_sales (
@@ -238,7 +311,8 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['process_sale'])) {
                 
                 if($sale_type == 'cash' && $cash_account && $sales_account) {
                     $voucher_no = 'ITEM-CASH-' . date('YmdHis') . rand(100, 999);
-                    $narration = "Item sale - $invoice_no - Amount: BDT " . number_format($total_amount, 2);
+                    $customer_info = $customer_id ? " - Customer: $customer_name" : "";
+                    $narration = "Item sale$customer_info - $invoice_no - Amount: BDT " . number_format($total_amount, 2);
                     
                     $stmt = $pdo->prepare("INSERT INTO vouchers (voucher_no, voucher_type, date, narration, created_by, status) VALUES (?, 'receipt', CURDATE(), ?, ?, 'approved')");
                     $stmt->execute([$voucher_no, $narration, $user['id']]);
@@ -279,6 +353,7 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['process_sale'])) {
                 
                 $_SESSION['last_item_invoice'] = [
                     'invoice_no' => $invoice_no,
+                    'customer_id' => $customer_id,
                     'customer_name' => $customer_name,
                     'customer_phone' => $customer_phone,
                     'date' => date('Y-m-d H:i:s'),
@@ -671,17 +746,61 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                             <!-- Checkout Form -->
                             <form method="POST" id="checkoutForm" class="mt-3">
                                 <div class="row g-2">
-                                    <div class="col-6">
-                                        <label>Customer</label>
-                                        <select name="customer_id" class="form-control form-control-sm" onchange="updateCustomerFields(this)">
-                                            <option value="">Walk-in</option>
-                                            <?php foreach($customers as $c): ?>
-                                                <option value="<?php echo $c['id']; ?>" data-name="<?php echo $c['customer_name']; ?>" data-phone="<?php echo $c['phone']; ?>">
-                                                    <?php echo $c['customer_name']; ?>
-                                                </option>
-                                            <?php endforeach; ?>
-                                        </select>
+                                    <!-- ============================================= -->
+                                    <!-- CUSTOMER SELECTION - ADDED -->
+                                    <!-- ============================================= -->
+                                    <div class="col-12">
+                                        <div class="card" style="background: #f8f9fa; border: 1px solid #dee2e6;">
+                                            <div class="card-body p-2">
+                                                <div class="row">
+                                                    <div class="col-md-6">
+                                                        <div class="mb-2">
+                                                            <label><i class="fas fa-user"></i> Customer</label>
+                                                            <select name="customer_id" id="customer_id" class="form-control form-control-sm" onchange="loadCustomerData(this)">
+                                                                <option value="">-- Walk-in Customer --</option>
+                                                                <?php 
+                                                                $customers = $pdo->query("SELECT * FROM customers WHERE is_active = 1 ORDER BY customer_name")->fetchAll();
+                                                                foreach($customers as $c): 
+                                                                    $net = ($c['current_balance'] ?? 0) - ($c['advance_balance'] ?? 0);
+                                                                    $status = $net > 0 ? 'Due: ' . number_format($net, 2) : ($net < 0 ? 'Adv: ' . number_format(abs($net), 2) : 'Settled');
+                                                                ?>
+                                                                    <option value="<?php echo $c['id']; ?>" 
+                                                                            data-name="<?php echo $c['customer_name']; ?>"
+                                                                            data-phone="<?php echo $c['phone']; ?>"
+                                                                            data-address="<?php echo $c['address']; ?>"
+                                                                            data-balance="<?php echo $c['current_balance'] ?? 0; ?>"
+                                                                            data-advance="<?php echo $c['advance_balance'] ?? 0; ?>">
+                                                                        <?php echo $c['customer_name']; ?> (<?php echo $c['customer_code']; ?>) - <?php echo $status; ?>
+                                                                    </option>
+                                                                <?php endforeach; ?>
+                                                            </select>
+                                                        </div>
+                                                    </div>
+                                                    <div class="col-md-3">
+                                                        <div class="mb-2">
+                                                            <label><i class="fas fa-user-tag"></i> Customer Name</label>
+                                                            <input type="text" name="customer_name" id="customer_name" class="form-control form-control-sm" placeholder="Enter name or select above">
+                                                        </div>
+                                                    </div>
+                                                    <div class="col-md-3">
+                                                        <div class="mb-2">
+                                                            <label><i class="fas fa-phone"></i> Phone</label>
+                                                            <input type="text" name="customer_phone" id="customer_phone" class="form-control form-control-sm" placeholder="Enter phone">
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                                <div id="customerInfo" style="display:none; background: #e8f4f8; padding: 8px 12px; border-radius: 6px; margin-top: 5px;">
+                                                    <small>
+                                                        <i class="fas fa-info-circle"></i> 
+                                                        Balance: <span id="custBalance">0.00</span> | 
+                                                        Advance: <span id="custAdvance">0.00</span> | 
+                                                        <span id="custAddress"></span>
+                                                    </small>
+                                                </div>
+                                            </div>
+                                        </div>
                                     </div>
+                                    
                                     <div class="col-6">
                                         <label>Sale Type</label>
                                         <select name="sale_type" id="sale_type" class="form-control form-control-sm" onchange="toggleSaleType(this)">
@@ -735,14 +854,17 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                                         </div>
                                     </div>
                                     
-                                    <div class="col-6">
-                                        <label>Customer Name</label>
-                                        <input type="text" name="customer_name" id="customer_name" class="form-control form-control-sm" placeholder="Name">
+                                    <div id="customer_fields" style="display:none;">
+                                        <div class="col-6">
+                                            <label>Customer Name *</label>
+                                            <input type="text" name="customer_name_credit" id="customer_name_credit" class="form-control form-control-sm">
+                                        </div>
+                                        <div class="col-6">
+                                            <label>Customer Phone</label>
+                                            <input type="text" name="customer_phone_credit" id="customer_phone_credit" class="form-control form-control-sm">
+                                        </div>
                                     </div>
-                                    <div class="col-6">
-                                        <label>Customer Phone</label>
-                                        <input type="text" name="customer_phone" id="customer_phone" class="form-control form-control-sm" placeholder="Phone">
-                                    </div>
+                                    
                                     <div class="col-6">
                                         <label>Discount %</label>
                                         <input type="number" name="discount_percent" class="form-control form-control-sm" step="0.01" value="0" oninput="updateDiscount(this)">
@@ -827,6 +949,33 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
         let currentSubtotal = <?php echo $cart_subtotal; ?>;
         
         // =============================================
+        // CUSTOMER SELECTION FUNCTIONS - ADDED
+        // =============================================
+        function loadCustomerData(select) {
+            var option = select.options[select.selectedIndex];
+            if(option.value) {
+                document.getElementById('customer_name').value = option.dataset.name || '';
+                document.getElementById('customer_phone').value = option.dataset.phone || '';
+                document.getElementById('custBalance').innerText = parseFloat(option.dataset.balance || 0).toFixed(2);
+                document.getElementById('custAdvance').innerText = parseFloat(option.dataset.advance || 0).toFixed(2);
+                document.getElementById('custAddress').innerHTML = option.dataset.address ? '| <i class="fas fa-map-marker-alt"></i> ' + option.dataset.address : '';
+                document.getElementById('customerInfo').style.display = 'block';
+            } else {
+                document.getElementById('customer_name').value = '';
+                document.getElementById('customer_phone').value = '';
+                document.getElementById('customerInfo').style.display = 'none';
+            }
+        }
+        
+        // Auto-fill customer name when typing
+        document.getElementById('customer_name').addEventListener('input', function() {
+            if(this.value.trim()) {
+                document.getElementById('customer_id').value = '';
+                document.getElementById('customerInfo').style.display = 'none';
+            }
+        });
+
+        // =============================================
         // DRAGABLE SPLIT SCREEN
         // =============================================
         const splitContainer = document.getElementById('splitContainer');
@@ -871,7 +1020,7 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                 document.body.style.userSelect = '';
             }
         });
-        
+
         // =============================================
         // PAYMENT METHOD FUNCTIONS
         // =============================================
@@ -907,14 +1056,14 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                 paymentSection.style.display = 'none';
                 customerFields.style.display = 'block';
                 cashFields.style.display = 'none';
-                document.getElementById('customer_name').setAttribute('required', 'required');
+                document.getElementById('customer_name_credit').setAttribute('required', 'required');
                 document.getElementById('received').value = 0;
                 document.getElementById('payment_method').value = 'credit';
             } else {
                 paymentSection.style.display = 'block';
                 customerFields.style.display = 'none';
                 cashFields.style.display = 'block';
-                document.getElementById('customer_name').removeAttribute('required');
+                document.getElementById('customer_name_credit').removeAttribute('required');
                 document.getElementById('received').value = 0;
                 document.getElementById('payment_method').value = 'cash';
                 document.getElementById('card_details').classList.remove('show');
@@ -977,14 +1126,6 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                     el.style.display = 'none';
                 }
             });
-        }
-        
-        function updateCustomerFields(select) {
-            let option = select.options[select.selectedIndex];
-            if(option.value) {
-                document.getElementById('customer_name').value = option.dataset.name || '';
-                document.getElementById('customer_phone').value = option.dataset.phone || '';
-            }
         }
         
         function calculateChange() {
