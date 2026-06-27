@@ -583,29 +583,31 @@ $company_name = $settings['company_name'] ?? 'FF Enterprise';
                     <hr>
                     
                     <!-- ============================================= -->
-                    <!-- PLC INFORMATION - FIXED -->
+                    <!-- PLC INFORMATION - Shows Opening, Closing & Difference -->
                     <!-- ============================================= -->
+                    <?php 
+                    $opening_plc = $selected_shift['opening_plc_count'] ?? 0;
+                    $closing_plc = $selected_shift['closing_plc_count'] ?? 0;
+                    $diff = $closing_plc - $opening_plc;
+                    ?>
                     <div class="plc-card mb-3">
                         <div class="row">
                             <div class="col-md-3">
-                                <strong>Opening PLC:</strong><br>
-                                <span class="plc-value"><?php echo number_format($selected_shift['opening_plc_count'] ?? 0, 2); ?></span>
+                                <strong><i class="fas fa-play-circle"></i> Opening PLC:</strong><br>
+                                <span class="plc-value"><?php echo number_format($opening_plc, 2); ?></span>
                             </div>
                             <div class="col-md-3">
-                                <strong>Closing PLC:</strong><br>
-                                <span class="plc-value"><?php echo number_format($selected_shift['closing_plc_count'] ?? 0, 2); ?></span>
+                                <strong><i class="fas fa-stop-circle"></i> Closing PLC:</strong><br>
+                                <span class="plc-value"><?php echo number_format($closing_plc, 2); ?></span>
                             </div>
                             <div class="col-md-3">
-                                <strong>PLC Difference:</strong><br>
-                                <span class="plc-diff <?php 
-                                    $diff = ($selected_shift['closing_plc_count'] ?? 0) - ($selected_shift['opening_plc_count'] ?? 0);
-                                    echo $diff > 0 ? 'plc-positive' : ($diff < 0 ? 'plc-negative' : 'plc-zero');
-                                ?>">
+                                <strong><i class="fas fa-arrow-right"></i> PLC Difference:</strong><br>
+                                <span class="plc-diff <?php echo $diff > 0 ? 'plc-positive' : ($diff < 0 ? 'plc-negative' : 'plc-zero'); ?>">
                                     <?php echo number_format($diff, 2); ?>
                                 </span>
                             </div>
                             <div class="col-md-3 text-end">
-                                <span class="badge bg-success">PLC Count</span>
+                                <span class="badge bg-success"><i class="fas fa-microchip"></i> PLC Count</span>
                             </div>
                         </div>
                     </div>
@@ -816,7 +818,7 @@ $company_name = $settings['company_name'] ?? 'FF Enterprise';
             <?php endif; ?>
             
             <!-- ============================================= -->
-            <!-- SHIFT LIST -->
+            <!-- SHIFT LIST - Shows Opening PLC, Closing PLC & Difference -->
             <!-- ============================================= -->
             <div class="card mt-4">
                 <div class="card-header">
@@ -838,6 +840,8 @@ $company_name = $settings['company_name'] ?? 'FF Enterprise';
                                     <th class="text-end">Liquid</th>
                                     <th class="text-end">Total</th>
                                     <th class="text-end">Cash Drawer</th>
+                                    <th class="text-end">Opening PLC</th>
+                                    <th class="text-end">Closing PLC</th>
                                     <th class="text-end">PLC Diff</th>
                                     <th>Status</th>
                                     <th class="no-print">Action</th>
@@ -845,7 +849,9 @@ $company_name = $settings['company_name'] ?? 'FF Enterprise';
                             </thead>
                             <tbody>
                                 <?php foreach($shifts as $shift): 
-                                    $plc_diff = ($shift['closing_plc_count'] ?? 0) - ($shift['opening_plc_count'] ?? 0);
+                                    $opening_plc = $shift['opening_plc_count'] ?? 0;
+                                    $closing_plc = $shift['closing_plc_count'] ?? 0;
+                                    $plc_diff = $closing_plc - $opening_plc;
                                 ?>
                                 <tr>
                                     <td><?php echo date('d-m-Y', strtotime($shift['shift_date'])); ?></td>
@@ -859,9 +865,15 @@ $company_name = $settings['company_name'] ?? 'FF Enterprise';
                                     <td class="text-end"><?php echo $currency; ?> <?php echo number_format($shift['total_liquid_sales'], 2); ?></td>
                                     <td class="text-end fw-bold"><?php echo $currency; ?> <?php echo number_format($shift['total_all_sales'], 2); ?></td>
                                     <td class="text-end"><?php echo $currency; ?> <?php echo number_format($shift['net_cash'], 2); ?></td>
+                                    <!-- ============================================= -->
+                                    <!-- PLC Columns - Opening, Closing & Difference -->
+                                    <!-- ============================================= -->
+                                    <td class="text-end text-primary"><?php echo number_format($opening_plc, 2); ?></td>
+                                    <td class="text-end text-info"><?php echo number_format($closing_plc, 2); ?></td>
                                     <td class="text-end <?php echo $plc_diff > 0 ? 'text-success' : ($plc_diff < 0 ? 'text-danger' : 'text-muted'); ?>">
                                         <?php echo number_format($plc_diff, 2); ?>
                                     </td>
+                                    <!-- ============================================= -->
                                     <td><?php echo ucfirst($shift['status']); ?></td>
                                     <td class="no-print">
                                         <a href="?from_date=<?php echo $from_date; ?>&to_date=<?php echo $to_date; ?>&shift_id=<?php echo $shift['id']; ?>" class="btn btn-sm btn-info">
@@ -880,13 +892,30 @@ $company_name = $settings['company_name'] ?? 'FF Enterprise';
                                     <td class="text-end"><?php echo $currency; ?> <?php echo number_format($total_liquid_sales, 2); ?></td>
                                     <td class="text-end"><?php echo $currency; ?> <?php echo number_format($total_all_sales, 2); ?></td>
                                     <td class="text-end"><?php echo $currency; ?> <?php echo number_format($total_receipts, 2); ?></td>
+                                    <!-- ============================================= -->
+                                    <!-- PLC Totals -->
                                     <td class="text-end"><?php 
-                                        $total_plc = 0;
+                                        $total_opening_plc = 0;
                                         foreach($shifts as $shift) {
-                                            $total_plc += ($shift['closing_plc_count'] ?? 0) - ($shift['opening_plc_count'] ?? 0);
+                                            $total_opening_plc += ($shift['opening_plc_count'] ?? 0);
                                         }
-                                        echo number_format($total_plc, 2);
+                                        echo number_format($total_opening_plc, 2);
                                     ?></td>
+                                    <td class="text-end"><?php 
+                                        $total_closing_plc = 0;
+                                        foreach($shifts as $shift) {
+                                            $total_closing_plc += ($shift['closing_plc_count'] ?? 0);
+                                        }
+                                        echo number_format($total_closing_plc, 2);
+                                    ?></td>
+                                    <td class="text-end"><?php 
+                                        $total_plc_diff = 0;
+                                        foreach($shifts as $shift) {
+                                            $total_plc_diff += ($shift['closing_plc_count'] ?? 0) - ($shift['opening_plc_count'] ?? 0);
+                                        }
+                                        echo number_format($total_plc_diff, 2);
+                                    ?></td>
+                                    <!-- ============================================= -->
                                     <td colspan="2"></td>
                                 </tr>
                             </tfoot>
@@ -901,6 +930,7 @@ $company_name = $settings['company_name'] ?? 'FF Enterprise';
                 <strong>Report Summary:</strong> 
                 <?php echo count($shifts); ?> shifts from <?php echo date('d M Y', strtotime($from_date)); ?> to <?php echo date('d M Y', strtotime($to_date)); ?>.
                 Total Sales: <?php echo $currency; ?> <?php echo number_format($total_all_sales, 2); ?>
+                | Total PLC Difference: <?php echo number_format($total_plc_diff ?? 0, 2); ?>
                 <br><small>Click <strong>Print Report</strong> button for landscape print with plain paper format.</small>
             </div>
         </div>
