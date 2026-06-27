@@ -26,7 +26,7 @@ $shifts = $pdo->query("SELECT * FROM shift_schedule WHERE is_active = 1")->fetch
 $tanks = $pdo->query("SELECT t.*, p.product_name FROM tanks t JOIN fuel_products p ON t.product_id = p.id WHERE t.is_active = 1")->fetchAll();
 
 // =============================================
-// FIXED: Get ALL nozzles including CNG pipeline nozzles
+// Get ALL nozzles including CNG pipeline nozzles
 // =============================================
 $nozzles = $pdo->query("
     SELECT 
@@ -50,6 +50,7 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['start_shift'])) {
     $shift_id = $_POST['shift_id'];
     $shift_date = date('Y-m-d');
     $opening_cash = isset($_POST['opening_cash']) && $_POST['opening_cash'] !== '' ? floatval($_POST['opening_cash']) : 0;
+    $opening_plc = isset($_POST['opening_plc']) && $_POST['opening_plc'] !== '' ? floatval($_POST['opening_plc']) : 0;
     $notes = isset($_POST['notes']) ? $_POST['notes'] : '';
     
     try {
@@ -61,9 +62,14 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['start_shift'])) {
             throw new Exception("A shift is already open! Please close it first.");
         }
         
-        // Insert shift closing record with opening cash
-        $stmt = $pdo->prepare("INSERT INTO shift_closing (shift_id, shift_date, opening_time, opened_by, opening_cash, notes, status) VALUES (?, ?, NOW(), ?, ?, ?, 'open')");
-        $stmt->execute([$shift_id, $shift_date, $user['id'], $opening_cash, $notes]);
+        // Insert shift closing record with opening cash and PLC
+        $stmt = $pdo->prepare("
+            INSERT INTO shift_closing (
+                shift_id, shift_date, opening_time, opened_by, 
+                opening_cash, opening_plc_count, notes, status
+            ) VALUES (?, ?, NOW(), ?, ?, ?, ?, 'open')
+        ");
+        $stmt->execute([$shift_id, $shift_date, $user['id'], $opening_cash, $opening_plc, $notes]);
         $shift_closing_id = $pdo->lastInsertId();
         
         // Record opening stock for each tank
@@ -72,35 +78,28 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['start_shift'])) {
             $stmt->execute([$shift_closing_id, $tank['id'], $tank['current_stock_liters'], 0, $user['id']]);
         }
         
-        // =============================================
-        // FIXED: Record opening meter readings for EACH nozzle
-        // =============================================
+        // Record opening meter readings for EACH nozzle (NO PLC here)
         foreach($nozzles as $nozzle) {
             $opening_meter = isset($_POST['opening_meter_' . $nozzle['id']]) && $_POST['opening_meter_' . $nozzle['id']] !== '' ? floatval($_POST['opening_meter_' . $nozzle['id']]) : $nozzle['closing_meter'];
-            $plc_count = isset($_POST['plc_count_' . $nozzle['id']]) && $_POST['plc_count_' . $nozzle['id']] !== '' ? floatval($_POST['plc_count_' . $nozzle['id']]) : 0;
             
             $stmt = $pdo->prepare("
                 INSERT INTO meter_readings (
                     nozzle_id, reading_date, shift_id, 
                     opening_meter, closing_meter, 
-                    plc_count, opening_plc_count, closing_plc_count,
                     recorded_by, shift_closed
-                ) VALUES (?, NOW(), ?, ?, ?, ?, ?, ?, ?, 0)
+                ) VALUES (?, NOW(), ?, ?, ?, ?, 0)
             ");
             $stmt->execute([
                 $nozzle['id'], 
                 $shift_closing_id, 
                 $opening_meter, 
                 0,
-                $plc_count,
-                $plc_count,
-                0,
                 $user['id']
             ]);
         }
         
         $pdo->commit();
-        $success = "✅ Shift started successfully with " . count($nozzles) . " nozzle meter readings!";
+        $success = "✅ Shift started successfully with " . count($nozzles) . " nozzle meter readings!<br>Opening PLC: " . number_format($opening_plc, 2);
         
         // Refresh active shift
         $stmt = $pdo->query("
@@ -123,6 +122,7 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['start_shift'])) {
 if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['close_shift'])) {
     $shift_id = $_POST['shift_id'];
     $closing_cash = isset($_POST['closing_cash']) && $_POST['closing_cash'] !== '' ? floatval($_POST['closing_cash']) : 0;
+    $closing_plc = isset($_POST['closing_plc']) && $_POST['closing_plc'] !== '' ? floatval($_POST['closing_plc']) : 0;
     $notes = isset($_POST['notes']) ? $_POST['notes'] : '';
     
     try {
@@ -137,24 +137,24 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['close_shift'])) {
             throw new Exception("Shift not found or already closed!");
         }
         
-        // =============================================
-        // FIXED: Update closing meter readings for EACH nozzle
-        // =============================================
+        // Calculate PLC difference
+        $opening_plc = $shift['opening_plc_count'] ?? 0;
+        $plc_difference = $closing_plc - $opening_plc;
+        
+        // Update closing meter readings for EACH nozzle (NO PLC here)
         foreach($nozzles as $nozzle) {
             $closing_meter = isset($_POST['closing_meter_' . $nozzle['id']]) && $_POST['closing_meter_' . $nozzle['id']] !== '' ? floatval($_POST['closing_meter_' . $nozzle['id']]) : 0;
-            $closing_plc = isset($_POST['closing_plc_' . $nozzle['id']]) && $_POST['closing_plc_' . $nozzle['id']] !== '' ? floatval($_POST['closing_plc_' . $nozzle['id']]) : 0;
             
             // Update meter readings with closing values
             $stmt = $pdo->prepare("
                 UPDATE meter_readings 
                 SET 
                     closing_meter = ?,
-                    closing_plc_count = ?,
                     shift_closed = 1
                 WHERE shift_id = ? AND nozzle_id = ? AND shift_closed = 0
                 ORDER BY id DESC LIMIT 1
             ");
-            $stmt->execute([$closing_meter, $closing_plc, $shift_id, $nozzle['id']]);
+            $stmt->execute([$closing_meter, $shift_id, $nozzle['id']]);
             
             // Update nozzle's closing meter for next shift
             $stmt = $pdo->prepare("UPDATE nozzles SET closing_meter = ? WHERE id = ?");
@@ -216,7 +216,7 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['close_shift'])) {
         
         $total_all_sales = $total_liquid_sales + $total_cng_sales;
         
-        // Update shift closing with all sales data
+        // Update shift closing with all sales data and PLC
         $stmt = $pdo->prepare("
             UPDATE shift_closing 
             SET closing_time = NOW(),
@@ -229,6 +229,7 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['close_shift'])) {
                 total_all_sales = ?,
                 total_receipts = ?,
                 net_cash = ?,
+                closing_plc_count = ?,                
                 closing_notes = ?,
                 status = 'closed',
                 closed_at = NOW()
@@ -244,6 +245,7 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['close_shift'])) {
             $total_all_sales,
             $closing_cash,
             $closing_cash,
+            $closing_plc,            
             $notes,
             $shift_id
         ]);
@@ -292,7 +294,7 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['close_shift'])) {
         $success .= "</tr>";
         $success .= "</tbody></table></div>";
         
-        $success .= "<strong>💰 Cash in Drawer:</strong> " . number_format($closing_cash, 2);
+        $success .= "<strong>💰 Cash in Drawer:</strong> " . number_format($closing_cash, 2) . "<br>";        
         
         $active_shift = null;
         
@@ -412,10 +414,6 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
             width: 120px;
             display: inline-block;
         }
-        .plc-input {
-            width: 120px;
-            display: inline-block;
-        }
         .section-title {
             background: #e9ecef;
             padding: 8px 12px;
@@ -423,7 +421,6 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
             margin: 10px 0 5px 0;
             font-weight: bold;
         }
-        /* Fix for modal scroll */
         .modal-body {
             max-height: 70vh;
             overflow-y: auto;
@@ -435,6 +432,15 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
             border-left: 4px solid #ffc107;
         }
         .cash-field label {
+            font-weight: 600;
+        }
+        .plc-field {
+            background: #d4edda;
+            padding: 15px;
+            border-radius: 8px;
+            border-left: 4px solid #28a745;
+        }
+        .plc-field label {
             font-weight: 600;
         }
     </style>
@@ -476,6 +482,7 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                                     <p><strong>Started:</strong> <?php echo date('d-m-Y h:i A', strtotime($active_shift['opening_time'])); ?></p>
                                     <p><strong>Opened By:</strong> <?php echo $user['full_name']; ?></p>
                                     <p><strong>Opening Cash:</strong> <?php echo $currency; ?> <?php echo number_format($active_shift['opening_cash'] ?? 0, 2); ?></p>
+                                    <p><strong>Opening PLC:</strong> <?php echo number_format($active_shift['opening_plc_count'] ?? 0, 2); ?></p>
                                     <p><strong>Nozzles:</strong> <?php echo count($nozzles); ?> (<?php echo count($pipeline_nozzles); ?> Pipeline, <?php echo count($tank_nozzles); ?> Tank)</p>
                                 </div>
                                 <div class="col-md-6 text-end">
@@ -490,7 +497,7 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                             <div class="row">
                                 <div class="col-md-8">
                                     <h4><i class="fas fa-stop-circle text-secondary"></i> No Active Shift</h4>
-                                    <p>Start a new shift to begin sales tracking. Enter nozzle meter readings and PLC counts.</p>
+                                    <p>Start a new shift to begin sales tracking. Enter nozzle meter readings and PLC count.</p>
                                 </div>
                                 <div class="col-md-4 text-end">
                                     <button class="btn btn-success btn-lg" data-bs-toggle="modal" data-bs-target="#startShiftModal">
@@ -563,7 +570,7 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                                     <th class="text-end">Credit Sales</th>
                                     <th class="text-end">CNG Sales</th>
                                     <th class="text-end">Liquid Sales</th>
-                                    <th class="text-end">Total Sales</th>
+                                    <th class="text-end">Total Sales</th>                                    
                                     <th>Nozzles</th>
                                     <th>Status</th>
                                     <th>Action</th>
@@ -603,7 +610,7 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                                     <td class="text-end"><?php echo $currency; ?> <?php echo number_format(array_sum(array_column($shift_history, 'total_credit_sales')), 2); ?></td>
                                     <td class="text-end"><?php echo $currency; ?> <?php echo number_format(array_sum(array_column($shift_history, 'total_cng_sales')), 2); ?></td>
                                     <td class="text-end"><?php echo $currency; ?> <?php echo number_format(array_sum(array_column($shift_history, 'total_liquid_sales')), 2); ?></td>
-                                    <td class="text-end"><?php echo $currency; ?> <?php echo number_format(array_sum(array_column($shift_history, 'total_all_sales')), 2); ?></td>
+                                    <td class="text-end"><?php echo $currency; ?> <?php echo number_format(array_sum(array_column($shift_history, 'total_all_sales')), 2); ?></td>                                    
                                     <td colspan="3"></td>
                                 </tr>
                             </tfoot>
@@ -615,7 +622,7 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
     </div>
     
     <!-- ============================================= -->
-    <!-- START SHIFT MODAL WITH NOZZLE READINGS & CASH -->
+    <!-- START SHIFT MODAL WITH NOZZLE READINGS & PLC -->
     <!-- ============================================= -->
     <div class="modal fade" id="startShiftModal" tabindex="-1">
         <div class="modal-dialog modal-lg">
@@ -668,11 +675,30 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                         </div>
                         
                         <!-- ============================================= -->
+                        <!-- PLC FIELD - SINGLE GLOBAL FIELD -->
+                        <!-- ============================================= -->
+                        <div class="plc-field mb-3">
+                            <div class="row">
+                                <div class="col-md-6">
+                                    <label><i class="fas fa-microchip"></i> Opening PLC Count</label>
+                                    <input type="number" name="opening_plc" class="form-control" step="0.01" placeholder="Enter opening PLC count" value="0">
+                                    <small class="text-muted">Enter the PLC count reading at shift start</small>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="alert alert-info mt-3">
+                                        <i class="fas fa-info-circle"></i>
+                                        <strong>Note:</strong> PLC (Programmable Logic Controller) count is a single global reading for the entire shift.
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <!-- ============================================= -->
                         <!-- NOZZLE METER READINGS - OPENING -->
                         <!-- ============================================= -->
                         <div class="alert alert-info">
                             <i class="fas fa-info-circle"></i>
-                            <strong>Opening Meter Readings & PLC Counts</strong>
+                            <strong>Opening Meter Readings</strong>
                             <br><small>Values are pre-filled with current meter readings. You can modify if needed.</small>
                         </div>
                         
@@ -685,25 +711,18 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                         <?php foreach($pipeline_nozzles as $nozzle): ?>
                         <div class="nozzle-meter-row pipeline">
                             <div class="row align-items-center">
-                                <div class="col-md-3">
+                                <div class="col-md-4">
                                     <span class="nozzle-name"><?php echo htmlspecialchars($nozzle['nozzle_name']); ?></span>
                                     <br><small class="text-muted"><?php echo $nozzle['product_name']; ?></small>
                                 </div>
-                                <div class="col-md-3">
+                                <div class="col-md-4">
                                     <label class="small">Opening Meter (m³)</label>
                                     <input type="number" name="opening_meter_<?php echo $nozzle['id']; ?>" 
                                            class="form-control form-control-sm meter-input" 
                                            step="0.01" 
                                            value="<?php echo $nozzle['closing_meter']; ?>">
                                 </div>
-                                <div class="col-md-3">
-                                    <label class="small">PLC Count</label>
-                                    <input type="number" name="plc_count_<?php echo $nozzle['id']; ?>" 
-                                           class="form-control form-control-sm plc-input" 
-                                           step="0.01" 
-                                           value="0">
-                                </div>
-                                <div class="col-md-3">
+                                <div class="col-md-4">
                                     <span class="badge badge-pipeline">Pipeline</span>
                                     <span class="badge bg-secondary">Current: <?php echo number_format($nozzle['closing_meter'], 2); ?></span>
                                 </div>
@@ -721,25 +740,18 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                         <?php foreach($tank_nozzles as $nozzle): ?>
                         <div class="nozzle-meter-row">
                             <div class="row align-items-center">
-                                <div class="col-md-3">
+                                <div class="col-md-4">
                                     <span class="nozzle-name"><?php echo htmlspecialchars($nozzle['nozzle_name']); ?></span>
                                     <br><small class="text-muted"><?php echo $nozzle['product_name']; ?> (<?php echo $nozzle['tank_name']; ?>)</small>
                                 </div>
-                                <div class="col-md-3">
+                                <div class="col-md-4">
                                     <label class="small">Opening Meter (L)</label>
                                     <input type="number" name="opening_meter_<?php echo $nozzle['id']; ?>" 
                                            class="form-control form-control-sm meter-input" 
                                            step="0.01" 
                                            value="<?php echo $nozzle['closing_meter']; ?>">
                                 </div>
-                                <div class="col-md-3">
-                                    <label class="small">PLC Count</label>
-                                    <input type="number" name="plc_count_<?php echo $nozzle['id']; ?>" 
-                                           class="form-control form-control-sm plc-input" 
-                                           step="0.01" 
-                                           value="0">
-                                </div>
-                                <div class="col-md-3">
+                                <div class="col-md-4">
                                     <span class="badge badge-tank">Tank</span>
                                     <span class="badge bg-secondary">Current: <?php echo number_format($nozzle['closing_meter'], 2); ?></span>
                                 </div>
@@ -772,7 +784,7 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
     </div>
     
     <!-- ============================================= -->
-    <!-- CLOSE SHIFT MODAL WITH NOZZLE READINGS -->
+    <!-- CLOSE SHIFT MODAL WITH NOZZLE READINGS & PLC -->
     <!-- ============================================= -->
     <div class="modal fade" id="closeShiftModal" tabindex="-1">
         <div class="modal-dialog modal-lg">
@@ -789,7 +801,7 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                             <strong>Before closing shift:</strong><br>
                             1. Count cash in drawer<br>
                             2. Record closing meter readings for each nozzle<br>
-                            3. Record closing PLC counts<br>
+                            3. Record closing PLC count<br>
                             4. Verify all sales are recorded
                         </div>
                         
@@ -798,7 +810,7 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                         <!-- ============================================= -->
                         <div class="alert alert-info">
                             <i class="fas fa-info-circle"></i>
-                            <strong>Enter Closing Meter Readings & PLC Counts for all nozzles</strong>
+                            <strong>Enter Closing Meter Readings for all nozzles</strong>
                             <br><small>The system will calculate the difference automatically</small>
                         </div>
                         
@@ -811,7 +823,7 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                         <?php foreach($pipeline_nozzles as $nozzle): 
                             // Get opening reading for this nozzle
                             $stmt = $pdo->prepare("
-                                SELECT opening_meter, plc_count as opening_plc 
+                                SELECT opening_meter
                                 FROM meter_readings 
                                 WHERE shift_id = ? AND nozzle_id = ? AND shift_closed = 0 
                                 ORDER BY id DESC LIMIT 1
@@ -819,7 +831,6 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                             $stmt->execute([$active_shift['id'], $nozzle['id']]);
                             $opening = $stmt->fetch();
                             $opening_meter = $opening['opening_meter'] ?? $nozzle['closing_meter'];
-                            $opening_plc = $opening['opening_plc'] ?? 0;
                         ?>
                         <div class="nozzle-meter-row pipeline">
                             <div class="row align-items-center">
@@ -827,12 +838,12 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                                     <span class="nozzle-name"><?php echo htmlspecialchars($nozzle['nozzle_name']); ?></span>
                                     <br><small class="text-muted"><?php echo $nozzle['product_name']; ?></small>
                                 </div>
-                                <div class="col-md-2">
+                                <div class="col-md-3">
                                     <label class="small">Opening (m³)</label>
                                     <input type="text" class="form-control form-control-sm" 
                                            value="<?php echo number_format($opening_meter, 2); ?>" disabled>
                                 </div>
-                                <div class="col-md-3">
+                                <div class="col-md-4">
                                     <label class="small">Closing Meter (m³) *</label>
                                     <input type="number" name="closing_meter_<?php echo $nozzle['id']; ?>" 
                                            class="form-control form-control-sm meter-input closing-meter" 
@@ -842,14 +853,6 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                                            required>
                                 </div>
                                 <div class="col-md-3">
-                                    <label class="small">Closing PLC Count *</label>
-                                    <input type="number" name="closing_plc_<?php echo $nozzle['id']; ?>" 
-                                           class="form-control form-control-sm plc-input closing-plc" 
-                                           step="0.01" 
-                                           data-opening-plc="<?php echo $opening_plc; ?>"
-                                           required>
-                                </div>
-                                <div class="col-md-2">
                                     <span class="badge bg-success" id="diff_display_<?php echo $nozzle['id']; ?>">Diff: 0.00</span>
                                 </div>
                             </div>
@@ -865,7 +868,7 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                         </div>
                         <?php foreach($tank_nozzles as $nozzle):
                             $stmt = $pdo->prepare("
-                                SELECT opening_meter, plc_count as opening_plc 
+                                SELECT opening_meter
                                 FROM meter_readings 
                                 WHERE shift_id = ? AND nozzle_id = ? AND shift_closed = 0 
                                 ORDER BY id DESC LIMIT 1
@@ -873,7 +876,6 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                             $stmt->execute([$active_shift['id'], $nozzle['id']]);
                             $opening = $stmt->fetch();
                             $opening_meter = $opening['opening_meter'] ?? $nozzle['closing_meter'];
-                            $opening_plc = $opening['opening_plc'] ?? 0;
                         ?>
                         <div class="nozzle-meter-row">
                             <div class="row align-items-center">
@@ -881,12 +883,12 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                                     <span class="nozzle-name"><?php echo htmlspecialchars($nozzle['nozzle_name']); ?></span>
                                     <br><small class="text-muted"><?php echo $nozzle['product_name']; ?></small>
                                 </div>
-                                <div class="col-md-2">
+                                <div class="col-md-3">
                                     <label class="small">Opening (L)</label>
                                     <input type="text" class="form-control form-control-sm" 
                                            value="<?php echo number_format($opening_meter, 2); ?>" disabled>
                                 </div>
-                                <div class="col-md-3">
+                                <div class="col-md-4">
                                     <label class="small">Closing Meter (L) *</label>
                                     <input type="number" name="closing_meter_<?php echo $nozzle['id']; ?>" 
                                            class="form-control form-control-sm meter-input closing-meter" 
@@ -896,14 +898,6 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                                            required>
                                 </div>
                                 <div class="col-md-3">
-                                    <label class="small">Closing PLC Count *</label>
-                                    <input type="number" name="closing_plc_<?php echo $nozzle['id']; ?>" 
-                                           class="form-control form-control-sm plc-input closing-plc" 
-                                           step="0.01" 
-                                           data-opening-plc="<?php echo $opening_plc; ?>"
-                                           required>
-                                </div>
-                                <div class="col-md-2">
                                     <span class="badge bg-success" id="diff_display_<?php echo $nozzle['id']; ?>">Diff: 0.00</span>
                                 </div>
                             </div>
@@ -913,16 +907,32 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                         
                         <hr>
                         
-                        <!-- Cash Drawer -->
+                        <!-- ============================================= -->
+                        <!-- CASH AND PLC FIELDS -->
+                        <!-- ============================================= -->
                         <div class="row">
                             <div class="col-md-6">
-                                <div class="mb-3">
+                                <div class="mb-3 cash-field">
                                     <label><i class="fas fa-money-bill"></i> Cash in Drawer (<?php echo $currency; ?>) *</label>
                                     <input type="number" name="closing_cash" class="form-control" step="0.01" required>
                                     <small class="text-muted">Enter the cash amount counted in drawer</small>
                                 </div>
                             </div>
                             <div class="col-md-6">
+                                <div class="mb-3 plc-field">
+                                    <label><i class="fas fa-microchip"></i> Closing PLC Count *</label>
+                                    <input type="number" name="closing_plc" class="form-control" step="0.01" required>
+                                    <small class="text-muted">Enter the PLC count reading at shift end</small>
+                                    <?php if($active_shift): ?>
+                                    <div class="mt-1">
+                                        <small class="text-primary">Opening PLC: <?php echo number_format($active_shift['opening_plc_count'] ?? 0, 2); ?></small>
+                                    </div>
+                                    <?php endif; ?>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="row">
+                            <div class="col-md-12">
                                 <div class="mb-3">
                                     <label><i class="fas fa-comment"></i> Closing Notes</label>
                                     <textarea name="notes" class="form-control" rows="2" placeholder="Optional closing notes"></textarea>
@@ -954,24 +964,30 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                 </div>
                 <div class="modal-body">
                     <div class="row mb-3">
-                        <div class="col-md-4">
+                        <div class="col-md-3">
                             <strong>Date:</strong> <?php echo date('d-m-Y', strtotime($shift['shift_date'])); ?>
                         </div>
-                        <div class="col-md-4">
+                        <div class="col-md-3">
                             <strong>Opened:</strong> <?php echo date('h:i A', strtotime($shift['opening_time'])); ?>
                         </div>
-                        <div class="col-md-4">
+                        <div class="col-md-3">
                             <strong>Closed:</strong> <?php echo date('h:i A', strtotime($shift['closing_time'])); ?>
                         </div>
-                        <div class="col-md-4">
+                        <div class="col-md-3">
                             <strong>Operator:</strong> <?php echo $shift['opened_by_name']; ?>
                         </div>
-                        <div class="col-md-4">
+                        <div class="col-md-3">
                             <strong>Opening Cash:</strong> <?php echo $currency; ?> <?php echo number_format($shift['opening_cash'] ?? 0, 2); ?>
                         </div>
-                        <div class="col-md-4">
+                        <div class="col-md-3">
                             <strong>Closing Cash:</strong> <?php echo $currency; ?> <?php echo number_format($shift['net_cash'] ?? 0, 2); ?>
                         </div>
+                        <div class="col-md-3">
+                            <strong>Opening PLC:</strong> <?php echo number_format($shift['opening_plc_count'] ?? 0, 2); ?>
+                        </div>
+                        <div class="col-md-3">
+                            <strong>Closing PLC:</strong> <?php echo number_format($shift['closing_plc_count'] ?? 0, 2); ?>
+                        </div>                        
                     </div>
                     
                     <?php
@@ -1000,10 +1016,7 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                                     <th>Product</th>
                                     <th class="text-end">Opening</th>
                                     <th class="text-end">Closing</th>
-                                    <th class="text-end">Diff</th>
-                                    <th class="text-end">Opening PLC</th>
-                                    <th class="text-end">Closing PLC</th>
-                                    <th class="text-end">PLC Diff</th>
+                                    <th class="text-end">Difference</th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -1021,9 +1034,6 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                                     <td class="text-end"><?php echo number_format($reading['opening_meter'], 2); ?></td>
                                     <td class="text-end"><?php echo number_format($reading['closing_meter'], 2); ?></td>
                                     <td class="text-end fw-bold"><?php echo number_format($reading['closing_meter'] - $reading['opening_meter'], 2); ?></td>
-                                    <td class="text-end"><?php echo number_format($reading['opening_plc_count'], 2); ?></td>
-                                    <td class="text-end"><?php echo number_format($reading['closing_plc_count'], 2); ?></td>
-                                    <td class="text-end fw-bold"><?php echo number_format($reading['closing_plc_count'] - $reading['opening_plc_count'], 2); ?></td>
                                 </tr>
                                 <?php endforeach; ?>
                             </tbody>
@@ -1069,7 +1079,6 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                 var nozzleId = $(this).data('nozzle');
                 $('#diff_display_' + nozzleId).text('Diff: ' + diff.toFixed(2));
                 
-                // Change color based on diff
                 if(diff < 0) {
                     $('#diff_display_' + nozzleId).removeClass('bg-success').addClass('bg-danger');
                 } else if(diff == 0) {
@@ -1086,14 +1095,10 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                 var valid = true;
                 var message = '';
                 
-                // Check if shift is selected
                 if($('select[name="shift_id"]').val() == '') {
                     valid = false;
                     message += 'Please select a shift.\n';
                 }
-                
-                // Opening cash is OPTIONAL - no validation needed
-                // Opening meters and PLC are OPTIONAL - pre-filled values
                 
                 if(!valid) {
                     e.preventDefault();
@@ -1101,13 +1106,13 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                     return false;
                 }
                 
-                // Confirm start shift
                 var nozzleCount = <?php echo count($nozzles); ?>;
                 var openingCash = parseFloat($('input[name="opening_cash"]').val()) || 0;
+                var openingPlc = parseFloat($('input[name="opening_plc"]').val()) || 0;
                 var confirmMsg = '⚠️ CONFIRM SHIFT START ⚠️\n\n';
                 confirmMsg += '📊 Nozzles: ' + nozzleCount + '\n';
                 confirmMsg += '💰 Opening Cash: ' + openingCash.toFixed(2) + '\n';
-                confirmMsg += '📌 All nozzle readings will be recorded.\n\n';
+                confirmMsg += '📟 Opening PLC: ' + openingPlc.toFixed(2) + '\n\n';
                 confirmMsg += 'Are you sure you want to start this shift?';
                 
                 if(!confirm(confirmMsg)) {
@@ -1125,7 +1130,6 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                 var valid = true;
                 var message = '';
                 
-                // Check if all closing meters are filled
                 $('.closing-meter').each(function() {
                     if($(this).val() == '') {
                         valid = false;
@@ -1133,18 +1137,14 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                     }
                 });
                 
-                // Check if all closing PLC counts are filled
-                $('.closing-plc').each(function() {
-                    if($(this).val() == '') {
-                        valid = false;
-                        message += 'Please enter closing PLC count for all nozzles.\n';
-                    }
-                });
-                
-                // Check if cash is entered
                 if($('input[name="closing_cash"]').val() == '') {
                     valid = false;
                     message += 'Please enter cash in drawer.\n';
+                }
+                
+                if($('input[name="closing_plc"]').val() == '') {
+                    valid = false;
+                    message += 'Please enter closing PLC count.\n';
                 }
                 
                 if(!valid) {
@@ -1153,11 +1153,12 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                     return false;
                 }
                 
-                // Confirm close shift
                 var closingCash = parseFloat($('input[name="closing_cash"]').val()) || 0;
+                var closingPlc = parseFloat($('input[name="closing_plc"]').val()) || 0;
                 var confirmMsg = '⚠️ CONFIRM SHIFT CLOSE ⚠️\n\n';
                 confirmMsg += '📊 Make sure all sales are recorded.\n';
-                confirmMsg += '💰 Closing Cash: ' + closingCash.toFixed(2) + '\n\n';
+                confirmMsg += '💰 Closing Cash: ' + closingCash.toFixed(2) + '\n';
+                confirmMsg += '📟 Closing PLC: ' + closingPlc.toFixed(2) + '\n\n';
                 confirmMsg += 'Are you sure you want to close this shift?';
                 confirmMsg += '\n\nThis action cannot be undone!';
                 

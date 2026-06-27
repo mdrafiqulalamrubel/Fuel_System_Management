@@ -13,6 +13,14 @@ $error = '';
 $success = '';
 $active_tab = $_GET['tab'] ?? 'general';
 
+// Get currency symbol
+$settings = [];
+$stmt = $pdo->query("SELECT setting_key, setting_value FROM system_settings");
+while($row = $stmt->fetch()) {
+    $settings[$row['setting_key']] = $row['setting_value'];
+}
+$currency = $settings['currency_symbol'] ?? 'BDT';
+
 // Update general settings
 if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['save_general'])) {
     $company_name = $_POST['company_name'];
@@ -20,6 +28,7 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['save_general'])) {
     $company_email = $_POST['company_email'];
     $company_address = $_POST['company_address'];
     $vat_reg_no = $_POST['vat_reg_no'];
+    $currency_symbol = $_POST['currency_symbol'] ?? 'BDT';
     
     $stmt = $pdo->prepare("UPDATE system_settings SET setting_value = ? WHERE setting_key = ?");
     $stmt->execute([$company_name, 'company_name']);
@@ -27,17 +36,52 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['save_general'])) {
     $stmt->execute([$company_email, 'company_email']);
     $stmt->execute([$company_address, 'company_address']);
     $stmt->execute([$vat_reg_no, 'vat_reg_no']);
-    $success = "General settings updated!";
+    $stmt->execute([$currency_symbol, 'currency_symbol']);
+    $success = "✅ General settings updated!";
+}
+
+// =============================================
+// FIXED: Update fuel prices
+// =============================================
+if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['update_prices'])) {
+    $product_ids = $_POST['product_id'] ?? [];
+    $unit_prices = $_POST['unit_price'] ?? [];
+    $purchase_rates = $_POST['purchase_rate'] ?? [];
+    
+    try {
+        $pdo->beginTransaction();
+        
+        for($i = 0; $i < count($product_ids); $i++) {
+            $product_id = $product_ids[$i];
+            $unit_price = floatval($unit_prices[$i] ?? 0);
+            $purchase_rate = floatval($purchase_rates[$i] ?? 0);
+            
+            $stmt = $pdo->prepare("UPDATE fuel_products SET unit_price = ?, purchase_rate = ? WHERE id = ?");
+            $stmt->execute([$unit_price, $purchase_rate, $product_id]);
+        }
+        
+        $pdo->commit();
+        $success = "✅ All prices updated successfully!";
+        
+        // Refresh products data
+        $products = $pdo->query("SELECT * FROM fuel_products")->fetchAll();
+        
+    } catch(Exception $e) {
+        $pdo->rollBack();
+        $error = "Error: " . $e->getMessage();
+    }
 }
 
 // Add/Edit Nozzle
 if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['save_nozzle'])) {
     $nozzle_name = $_POST['nozzle_name'];
     $tank_id = $_POST['tank_id'];
+    $is_pipeline = isset($_POST['is_pipeline']) ? 1 : 0;
+    $unit_type = $_POST['unit_type'] ?? 'liters';
     
-    $stmt = $pdo->prepare("INSERT INTO nozzles (nozzle_name, tank_id, is_active) VALUES (?, ?, 1)");
-    if($stmt->execute([$nozzle_name, $tank_id])) {
-        $success = "Nozzle added successfully!";
+    $stmt = $pdo->prepare("INSERT INTO nozzles (nozzle_name, tank_id, is_active, is_pipeline, unit_type) VALUES (?, ?, 1, ?, ?)");
+    if($stmt->execute([$nozzle_name, $tank_id, $is_pipeline, $unit_type])) {
+        $success = "✅ Nozzle added successfully!";
     } else {
         $error = "Failed to add nozzle";
     }
@@ -53,21 +97,9 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['save_tank'])) {
     
     $stmt = $pdo->prepare("INSERT INTO tanks (tank_name, product_id, capacity_liters, current_stock_liters, calibration_factor) VALUES (?, ?, ?, ?, ?)");
     if($stmt->execute([$tank_name, $product_id, $capacity_liters, $current_stock, $calibration_factor])) {
-        $success = "Tank added successfully!";
+        $success = "✅ Tank added successfully!";
     } else {
         $error = "Failed to add tank";
-    }
-}
-
-// Update fuel price
-if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['update_price'])) {
-    $product_id = $_POST['product_id'];
-    $unit_price = $_POST['unit_price'];
-    $purchase_rate = $_POST['purchase_rate'];
-    
-    $stmt = $pdo->prepare("UPDATE fuel_products SET unit_price = ?, purchase_rate = ? WHERE id = ?");
-    if($stmt->execute([$unit_price, $purchase_rate, $product_id])) {
-        $success = "Price updated successfully!";
     }
 }
 
@@ -82,7 +114,7 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['update_user'])) {
     
     $stmt = $pdo->prepare("UPDATE users SET full_name = ?, email = ?, phone = ?, role = ?, is_active = ? WHERE id = ?");
     if($stmt->execute([$full_name, $email, $phone, $role, $is_active, $user_id])) {
-        $success = "User updated successfully!";
+        $success = "✅ User updated successfully!";
     } else {
         $error = "Failed to update user";
     }
@@ -98,7 +130,7 @@ if(isset($_GET['delete_user'])) {
     } else {
         $stmt = $pdo->prepare("DELETE FROM users WHERE id = ?");
         if($stmt->execute([$delete_id])) {
-            $success = "User deleted successfully!";
+            $success = "✅ User deleted successfully!";
         } else {
             $error = "Failed to delete user";
         }
@@ -115,7 +147,7 @@ if(isset($_GET['toggle_status'])) {
     } else {
         $stmt = $pdo->prepare("UPDATE users SET is_active = NOT is_active WHERE id = ?");
         if($stmt->execute([$toggle_id])) {
-            $success = "User status updated successfully!";
+            $success = "✅ User status updated successfully!";
         } else {
             $error = "Failed to update user status";
         }
@@ -159,7 +191,6 @@ if(isset($_GET['edit_user'])) {
             transition: margin-left 0.3s;
         }
         
-        /* Tab Styles */
         .nav-tabs {
             border-bottom: 2px solid #e0e0e0;
             margin-bottom: 20px;
@@ -300,6 +331,12 @@ if(isset($_GET['edit_user'])) {
                                 <input type="text" name="vat_reg_no" class="form-control" value="<?php echo $settings['vat_reg_no'] ?? '123456789'; ?>">
                             </div>
                         </div>
+                        <div class="row mt-2">
+                            <div class="col-md-6">
+                                <label>Currency Symbol</label>
+                                <input type="text" name="currency_symbol" class="form-control" value="<?php echo $settings['currency_symbol'] ?? 'BDT'; ?>" required>
+                            </div>
+                        </div>
                         <div class="mt-2">
                             <label>Address</label>
                             <textarea name="company_address" class="form-control" rows="2"><?php echo $settings['company_address'] ?? 'Dhaka, Bangladesh'; ?></textarea>
@@ -362,6 +399,17 @@ if(isset($_GET['edit_user'])) {
                             <form method="POST">
                                 <div class="mb-2"><label>Nozzle Name</label><input type="text" name="nozzle_name" class="form-control" required placeholder="Nozzle-01"></div>
                                 <div class="mb-2"><label>Select Tank</label><select name="tank_id" class="form-control" required><option value="">Select Tank</option><?php foreach($tanks as $t){ echo "<option value='{$t['id']}'>{$t['tank_name']} ({$t['product_name']})</option>"; } ?></select></div>
+                                <div class="mb-2">
+                                    <label>Unit Type</label>
+                                    <select name="unit_type" class="form-control">
+                                        <option value="liters">Liters (L)</option>
+                                        <option value="kilograms">Kilograms (kg)</option>
+                                    </select>
+                                </div>
+                                <div class="mb-2 form-check">
+                                    <input type="checkbox" name="is_pipeline" class="form-check-input" value="1">
+                                    <label class="form-check-label">Pipeline Nozzle (CNG)</label>
+                                </div>
                                 <button type="submit" name="save_nozzle" class="btn btn-warning w-100">Add Nozzle</button>
                             </form>
                         </div>
@@ -375,8 +423,8 @@ if(isset($_GET['edit_user'])) {
                         <div class="card-body">
                             <div class="table-responsive">
                                 <table class="table table-bordered" id="nozzlesTable">
-                                    <thead class="table-dark"><tr><th>Nozzle</th><th>Tank</th><th>Product</th><th>Status</th></tr></thead>
-                                    <tbody><?php foreach($nozzles as $n){ echo "<tr><td>{$n['nozzle_name']}</td><td>{$n['tank_name']}</td><td>{$n['product_name']}</td><td><span class='badge bg-success'>Active</span></td></tr>"; } ?></tbody>
+                                    <thead class="table-dark"><tr><th>Nozzle</th><th>Tank</th><th>Product</th><th>Type</th><th>Status</th></tr></thead>
+                                    <tbody><?php foreach($nozzles as $n){ echo "<tr><td>{$n['nozzle_name']}</td><td>{$n['tank_name']}</td><td>{$n['product_name']}</td><td>".($n['is_pipeline'] ? 'Pipeline' : 'Tank')."</td><td><span class='badge bg-success'>Active</span></td></tr>"; } ?></tbody>
                                 </table>
                             </div>
                         </div>
@@ -385,29 +433,63 @@ if(isset($_GET['edit_user'])) {
             </div>
             <?php endif; ?>
             
-            <!-- Fuel Prices Tab -->
+            <!-- ============================================= -->
+            <!-- FUEL PRICES TAB - FIXED -->
+            <!-- ============================================= -->
             <?php if($active_tab == 'prices'): ?>
             <div class="card mt-3">
                 <div class="card-header bg-danger text-white">
                     <h5><i class="fas fa-tags"></i> Fuel Price Configuration</h5>
                 </div>
                 <div class="card-body">
+                    <div class="alert alert-info">
+                        <i class="fas fa-info-circle"></i>
+                        <strong>Note:</strong> Update selling prices and purchase rates for all products. 
+                        VAT and Tax are configured separately and cannot be changed here.
+                    </div>
                     <form method="POST">
                         <div class="table-responsive">
                             <table class="table table-bordered">
-                                <thead class="table-dark"><tr><th>Product</th><th>Selling Price (৳/L)</th><th>Purchase Rate (৳/L)</th><th>VAT %</th><th>Tax %</th></tr></thead>
-                                <tbody><?php foreach($products as $p): ?>
-                                <tr>
-                                    <td><?php echo $p['product_name']; ?><input type="hidden" name="product_id[]" value="<?php echo $p['id']; ?>"></td>
-                                    <td><input type="number" name="unit_price[]" class="form-control" step="0.01" value="<?php echo $p['unit_price']; ?>" required></td>
-                                    <td><input type="number" name="purchase_rate[]" class="form-control" step="0.01" value="<?php echo $p['purchase_rate']; ?>" required></td>
-                                    <td><input type="number" name="vat[]" class="form-control" step="0.01" value="<?php echo $p['vat_percentage']; ?>" readonly></td>
-                                    <td><input type="number" name="tax[]" class="form-control" step="0.01" value="<?php echo $p['tax_percentage']; ?>" readonly></td>
-                                </tr>
-                                <?php endforeach; ?></tbody>
+                                <thead class="table-dark">
+                                    <tr>
+                                        <th>Product</th>
+                                        <th>Selling Price (<?php echo $currency; ?>/L)</th>
+                                        <th>Purchase Rate (<?php echo $currency; ?>/L)</th>
+                                        <th>VAT %</th>
+                                        <th>Tax %</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <?php foreach($products as $p): ?>
+                                    <tr>
+                                        <td>
+                                            <strong><?php echo htmlspecialchars($p['product_name']); ?></strong>
+                                            <input type="hidden" name="product_id[]" value="<?php echo $p['id']; ?>">
+                                        </td>
+                                        <td>
+                                            <input type="number" name="unit_price[]" class="form-control" step="0.01" 
+                                                   value="<?php echo $p['unit_price']; ?>" required>
+                                        </td>
+                                        <td>
+                                            <input type="number" name="purchase_rate[]" class="form-control" step="0.01" 
+                                                   value="<?php echo $p['purchase_rate']; ?>" required>
+                                        </td>
+                                        <td>
+                                            <input type="number" name="vat[]" class="form-control" step="0.01" 
+                                                   value="<?php echo $p['vat_percentage']; ?>" readonly>
+                                        </td>
+                                        <td>
+                                            <input type="number" name="tax[]" class="form-control" step="0.01" 
+                                                   value="<?php echo $p['tax_percentage']; ?>" readonly>
+                                        </td>
+                                    </tr>
+                                    <?php endforeach; ?>
+                                </tbody>
                             </table>
                         </div>
-                        <button type="submit" name="update_price" class="btn btn-danger mt-3">Update Prices</button>
+                        <button type="submit" name="update_prices" class="btn btn-danger mt-3">
+                            <i class="fas fa-save"></i> Update Prices
+                        </button>
                     </form>
                 </div>
             </div>
