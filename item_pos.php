@@ -756,8 +756,8 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                                                     <div class="col-md-6">
                                                         <div class="mb-2">
                                                             <label><i class="fas fa-user"></i> Customer</label>
-                                                            <select name="customer_id" id="customer_id" class="form-control form-control-sm" onchange="loadCustomerData(this)">
-                                                                <option value="">-- Walk-in Customer --</option>
+                                                                <select name="customer_id" id="customer_id" class="form-control form-control-sm" onchange="loadCustomerData(this)">
+                                                                <option value="" selected>-- Walk-in Customer --</option>
                                                                 <?php 
                                                                 $customers = $pdo->query("SELECT * FROM customers WHERE is_active = 1 ORDER BY customer_name")->fetchAll();
                                                                 foreach($customers as $c): 
@@ -1018,6 +1018,19 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                 gutter.classList.remove('dragging');
                 document.body.style.cursor = '';
                 document.body.style.userSelect = '';
+            }
+        });
+
+        // Add this to your existing JavaScript to ensure default is Walk-in
+        document.addEventListener('DOMContentLoaded', function() {
+            // Ensure Walk-in Customer is selected by default
+            var customerSelect = document.getElementById('customer_id');
+            if(customerSelect) {
+                customerSelect.value = '';
+                // Clear any auto-filled customer info
+                document.getElementById('customer_name').value = '';
+                document.getElementById('customer_phone').value = '';
+                document.getElementById('customerInfo').style.display = 'none';
             }
         });
 

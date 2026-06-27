@@ -734,8 +734,9 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                                                     <div class="col-md-5">
                                                         <div class="mb-2">
                                                             <label><i class="fas fa-user"></i> Customer</label>
+                                                            
                                                             <select name="customer_id" id="customer_id" class="form-control form-control-sm" onchange="loadCustomerData(this)">
-                                                                <option value="">-- Walk-in Customer --</option>
+                                                                <option value="" selected>-- Walk-in Customer --</option>
                                                                 <?php 
                                                                 $customers = $pdo->query("SELECT * FROM customers WHERE is_active = 1 ORDER BY customer_name")->fetchAll();
                                                                 foreach($customers as $c): 
@@ -752,6 +753,7 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                                                                     </option>
                                                                 <?php endforeach; ?>
                                                             </select>
+
                                                         </div>
                                                     </div>
                                                     <div class="col-md-4">
@@ -1080,7 +1082,23 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
         setInterval(updateCurrentTime, 1000);
 
         // =============================================
-        // CUSTOMER SELECTION FUNCTIONS - ADDED
+        // FIX: Ensure Walk-in Customer is selected by default
+        // =============================================
+        document.addEventListener('DOMContentLoaded', function() {
+            var customerSelect = document.getElementById('customer_id');
+            if(customerSelect) {
+                customerSelect.selectedIndex = 0;
+                document.getElementById('customer_name').value = '';
+                document.getElementById('customer_phone').value = '';
+                document.getElementById('customerInfo').style.display = 'none';
+                document.getElementById('custBalance').innerText = '0.00';
+                document.getElementById('custAdvance').innerText = '0.00';
+                document.getElementById('custAddress').innerHTML = '';
+            }
+        });
+
+        // =============================================
+        // CUSTOMER SELECTION FUNCTIONS
         // =============================================
         function loadCustomerData(select) {
             var option = select.options[select.selectedIndex];
@@ -1112,7 +1130,6 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
         function selectPaymentMethod(method) {
             document.getElementById('payment_method').value = method;
             
-            // Update button styles
             document.querySelectorAll('.payment-method-btn').forEach(btn => {
                 btn.classList.remove('active');
                 if(btn.dataset.method == method) {
@@ -1120,14 +1137,12 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                 }
             });
             
-            // Show/hide card details
             if(method === 'card') {
                 document.getElementById('card_details').classList.add('show');
             } else {
                 document.getElementById('card_details').classList.remove('show');
             }
             
-            // For Bkash and Nagad, show transaction ID field
             if(method === 'bkash' || method === 'nagad') {
                 document.getElementById('transaction_id').placeholder = 'Enter ' + method.charAt(0).toUpperCase() + method.slice(1) + ' transaction ID';
             } else {
@@ -1146,7 +1161,6 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                 cashFields.style.display = 'none';
                 document.getElementById('customer_name_credit').setAttribute('required', 'required');
                 document.getElementById('received').value = 0;
-                // Set payment method to credit
                 document.getElementById('payment_method').value = 'credit';
             } else {
                 paymentSection.style.display = 'block';
@@ -1154,9 +1168,7 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                 cashFields.style.display = 'block';
                 document.getElementById('customer_name_credit').removeAttribute('required');
                 document.getElementById('received').value = 0;
-                // Reset payment method to cash
                 document.getElementById('payment_method').value = 'cash';
-                // Reset card details
                 document.getElementById('card_details').classList.remove('show');
                 document.querySelectorAll('.payment-method-btn').forEach(btn => {
                     btn.classList.remove('active');
@@ -1212,7 +1224,6 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
             document.getElementById('display_tank_stock').innerText = parseFloat(tankStock).toFixed(2);
             document.getElementById('tank_info').style.display = 'block';
             
-            // Set unit display
             let unitDisplay = unitType == 'kilograms' ? 'kg' : 'L';
             let labelDisplay = unitType == 'kilograms' ? 'Kilograms' : 'Liters';
             document.getElementById('display_stock_unit').innerText = unitDisplay;

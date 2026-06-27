@@ -111,46 +111,8 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['make_cng_sale'])) {
     $transaction_id = isset($_POST['transaction_id']) ? trim($_POST['transaction_id']) : '';
     
     // For credit sales, payment method is 'credit'
-    // Handle Credit Sale for CNG
     if($sale_type == 'credit') {
-        // If customer_id is not set but we have customer_name, create or find customer
-        if(empty($customer_id) && !empty($customer_name)) {
-            if(!empty($customer_phone)) {
-                $stmt = $pdo->prepare("SELECT id FROM customers WHERE phone = ?");
-                $stmt->execute([$customer_phone]);
-                $existing = $stmt->fetch();
-                if($existing) {
-                    $customer_id = $existing['id'];
-                    $stmt = $pdo->prepare("UPDATE customers SET customer_name = ? WHERE id = ?");
-                    $stmt->execute([$customer_name, $customer_id]);
-                }
-            }
-            if(empty($customer_id)) {
-                $stmt = $pdo->prepare("SELECT id FROM customers WHERE customer_name = ?");
-                $stmt->execute([$customer_name]);
-                $existing = $stmt->fetch();
-                if($existing) {
-                    $customer_id = $existing['id'];
-                } else {
-                    $stmt = $pdo->prepare("INSERT INTO customers (customer_code, customer_name, phone, credit_limit) VALUES (?, ?, ?, ?)");
-                    $customer_code = 'CUST-' . date('Ymd') . rand(100, 999);
-                    $stmt->execute([$customer_code, $customer_name, $customer_phone, 50000]);
-                    $customer_id = $pdo->lastInsertId();
-                }
-            }
-        }
-        
-        if($customer_id) {
-            $due_date = date('Y-m-d', strtotime('+30 days'));
-            $stmt = $pdo->prepare("
-                INSERT INTO credit_sales (sale_id, customer_id, invoice_no, sale_date, due_date, total_amount, paid_amount, balance_due, status) 
-                VALUES (?, ?, ?, CURDATE(), ?, ?, 0, ?, 'pending')
-            ");
-            $stmt->execute([$sale_id, $customer_id, $invoice_no, $due_date, $total_amount, $total_amount]);
-            
-            $stmt = $pdo->prepare("UPDATE customers SET current_balance = current_balance + ? WHERE id = ?");
-            $stmt->execute([$total_amount, $customer_id]);
-        }
+        $payment_method = 'credit';
     }
     // =============================================
     
@@ -635,7 +597,7 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                                 </div>
                                 
                                 <!-- ============================================= -->
-                                <!-- CUSTOMER SELECTION - ADDED -->
+                                <!-- CUSTOMER SELECTION -->
                                 <!-- ============================================= -->
                                 <div class="row">
                                     <div class="col-md-12">
@@ -646,7 +608,7 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                                                         <div class="mb-2">
                                                             <label><i class="fas fa-user"></i> Customer</label>
                                                             <select name="customer_id" id="customer_id" class="form-control form-control-sm" onchange="loadCustomerData(this)">
-                                                                <option value="">-- Walk-in Customer --</option>
+                                                                <option value="" selected>-- Walk-in Customer --</option>
                                                                 <?php 
                                                                 $customers = $pdo->query("SELECT * FROM customers WHERE is_active = 1 ORDER BY customer_name")->fetchAll();
                                                                 foreach($customers as $c): 
@@ -1019,7 +981,42 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
     <script>
         // =============================================
-        // CUSTOMER SELECTION FUNCTIONS - ADDED
+        // FIX: Ensure Walk-in Customer is selected by default
+        // =============================================
+        function setDefaultCustomer() {
+            var customerSelect = document.getElementById('customer_id');
+            if(customerSelect) {
+                customerSelect.value = '';
+                var nameField = document.getElementById('customer_name');
+                var phoneField = document.getElementById('customer_phone');
+                var infoDiv = document.getElementById('customerInfo');
+                if(nameField) nameField.value = '';
+                if(phoneField) phoneField.value = '';
+                if(infoDiv) infoDiv.style.display = 'none';
+                document.getElementById('custBalance').innerText = '0.00';
+                document.getElementById('custAdvance').innerText = '0.00';
+                document.getElementById('custAddress').innerHTML = '';
+            }
+        }
+
+        // Run immediately when page loads
+        setDefaultCustomer();
+
+        // Also run after a slight delay to ensure all elements are loaded
+        setTimeout(setDefaultCustomer, 100);
+
+        // Also run when page is restored from cache (back/forward buttons)
+        window.addEventListener('pageshow', function() {
+            setDefaultCustomer();
+        });
+
+        // Run when DOM is fully loaded
+        document.addEventListener('DOMContentLoaded', function() {
+            setDefaultCustomer();
+        });
+
+        // =============================================
+        // CUSTOMER SELECTION FUNCTIONS
         // =============================================
         function loadCustomerData(select) {
             var option = select.options[select.selectedIndex];
@@ -1038,10 +1035,15 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
         }
         
         // Auto-fill customer name when typing
-        document.getElementById('customer_name').addEventListener('input', function() {
-            if(this.value.trim()) {
-                document.getElementById('customer_id').value = '';
-                document.getElementById('customerInfo').style.display = 'none';
+        document.addEventListener('DOMContentLoaded', function() {
+            var nameField = document.getElementById('customer_name');
+            if(nameField) {
+                nameField.addEventListener('input', function() {
+                    if(this.value.trim()) {
+                        document.getElementById('customer_id').value = '';
+                        document.getElementById('customerInfo').style.display = 'none';
+                    }
+                });
             }
         });
 
