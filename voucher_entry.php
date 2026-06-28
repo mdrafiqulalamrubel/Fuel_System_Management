@@ -294,6 +294,27 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
         .badge-voucher.payment { background: #dc3545; color: white; }
         .badge-voucher.receipt { background: #28a745; color: white; }
         .badge-voucher.contra { background: #fd7e14; color: white; }
+        
+        .amount-input {
+            transition: all 0.2s;
+        }
+        .amount-input:focus {
+            box-shadow: 0 0 0 0.2rem rgba(102, 126, 234, 0.25);
+        }
+        .amount-input.debit-input:focus {
+            box-shadow: 0 0 0 0.2rem rgba(220, 53, 69, 0.25);
+            border-color: #dc3545;
+        }
+        .amount-input.credit-input:focus {
+            box-shadow: 0 0 0 0.2rem rgba(40, 167, 69, 0.25);
+            border-color: #28a745;
+        }
+        .auto-filled {
+            background: #fff3cd !important;
+        }
+        .auto-filled:focus {
+            background: #fff3cd !important;
+        }
     </style>
 </head>
 <body>
@@ -459,10 +480,10 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                                             </select>
                                         </td>
                                         <td>
-                                            <input type="number" name="debit[]" class="form-control amount-input debit-input" step="0.01" value="0" oninput="calculateTotals()">
+                                            <input type="number" name="debit[]" class="form-control amount-input debit-input" step="0.01" value="0" onchange="handleAmountInput(this)">
                                         </td>
                                         <td>
-                                            <input type="number" name="credit[]" class="form-control amount-input credit-input" step="0.01" value="0" oninput="calculateTotals()">
+                                            <input type="number" name="credit[]" class="form-control amount-input credit-input" step="0.01" value="0" onchange="handleAmountInput(this)">
                                         </td>
                                     </tr>
                                     <tr class="voucher-row">
@@ -478,10 +499,10 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                                             </select>
                                         </td>
                                         <td>
-                                            <input type="number" name="debit[]" class="form-control amount-input debit-input" step="0.01" value="0" oninput="calculateTotals()">
+                                            <input type="number" name="debit[]" class="form-control amount-input debit-input" step="0.01" value="0" onchange="handleAmountInput(this)">
                                         </td>
                                         <td>
-                                            <input type="number" name="credit[]" class="form-control amount-input credit-input" step="0.01" value="0" oninput="calculateTotals()">
+                                            <input type="number" name="credit[]" class="form-control amount-input credit-input" step="0.01" value="0" onchange="handleAmountInput(this)">
                                         </td>
                                     </tr>
                                 </tbody>
@@ -493,6 +514,9 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                                             </button>
                                             <button type="button" class="btn btn-danger btn-sm" onclick="removeRow()">
                                                 <i class="fas fa-minus"></i> Remove Last
+                                            </button>
+                                            <button type="button" class="btn btn-warning btn-sm" onclick="clearAutoFill()">
+                                                <i class="fas fa-undo"></i> Clear Auto-fill
                                             </button>
                                         </td>
                                         <td class="text-end debit-total" id="totalDebit">0.00</td>
@@ -569,6 +593,7 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
     
     <script>
         let rowCount = 2;
+        let autoFillTimeout = null;
         
         function selectVoucherType(type) {
             document.getElementById('voucher_type').value = type;
@@ -583,9 +608,7 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
             const customerSection = document.getElementById('customerSection');
             const supplierSection = document.getElementById('supplierSection');
             
-            // All sections are visible by default, but we can add hints
             if(type === 'contra') {
-                // Contra doesn't need customer or supplier
                 customerSection.style.opacity = '0.5';
                 supplierSection.style.opacity = '0.5';
             } else {
@@ -608,6 +631,78 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
             }
         }
         
+        // =============================================
+        // AUTO-FILL LOGIC - Fill opposite field in NEXT ROW (on change/blur)
+        // =============================================
+        function handleAmountInput(input) {
+            // Clear any pending timeout
+            if(autoFillTimeout) {
+                clearTimeout(autoFillTimeout);
+            }
+            
+            // Use timeout to ensure the value is fully updated
+            autoFillTimeout = setTimeout(function() {
+                const row = input.closest('tr');
+                const allRows = document.querySelectorAll('#rowsContainer tr');
+                const rowIndex = Array.from(allRows).indexOf(row);
+                
+                // Check if this is a debit or credit input
+                const isDebit = input.classList.contains('debit-input');
+                const value = parseFloat(input.value) || 0;
+                
+                // If value is 0, clear the auto-filled class and return
+                if(value === 0) {
+                    input.classList.remove('auto-filled');
+                    calculateTotals();
+                    return;
+                }
+                
+                // Find the next row
+                let nextRow = null;
+                if(rowIndex < allRows.length - 1) {
+                    nextRow = allRows[rowIndex + 1];
+                }
+                
+                // If no next row, don't auto-fill
+                if(!nextRow) {
+                    calculateTotals();
+                    return;
+                }
+                
+                // Determine which field to fill in the next row
+                let targetInput = null;
+                if(isDebit) {
+                    // If current is debit, fill credit in next row
+                    targetInput = nextRow.querySelector('.credit-input');
+                } else {
+                    // If current is credit, fill debit in next row
+                    targetInput = nextRow.querySelector('.debit-input');
+                }
+                
+                if(targetInput) {
+                    // Only auto-fill if the target field is empty or has value 0
+                    const currentTargetValue = parseFloat(targetInput.value) || 0;
+                    
+                    // If target is empty or 0, fill it
+                    if(currentTargetValue === 0) {
+                        targetInput.value = value.toFixed(2);
+                        targetInput.classList.add('auto-filled');
+                    }
+                }
+                
+                calculateTotals();
+                autoFillTimeout = null;
+            }, 100);
+        }
+        
+        function clearAutoFill() {
+            document.querySelectorAll('.auto-filled').forEach(el => {
+                el.value = '0';
+                el.classList.remove('auto-filled');
+            });
+            calculateTotals();
+        }
+        
         function addRow() {
             rowCount++;
             const row = document.createElement('tr');
@@ -625,10 +720,10 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                     </select>
                 </td>
                 <td>
-                    <input type="number" name="debit[]" class="form-control amount-input debit-input" step="0.01" value="0" oninput="calculateTotals()">
+                    <input type="number" name="debit[]" class="form-control amount-input debit-input" step="0.01" value="0" onchange="handleAmountInput(this)">
                 </td>
                 <td>
-                    <input type="number" name="credit[]" class="form-control amount-input credit-input" step="0.01" value="0" oninput="calculateTotals()">
+                    <input type="number" name="credit[]" class="form-control amount-input credit-input" step="0.01" value="0" onchange="handleAmountInput(this)">
                 </td>
             `;
             document.getElementById('rowsContainer').appendChild(row);
