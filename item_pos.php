@@ -129,11 +129,12 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['process_sale'])) {
         $error = "Cart is empty! Please add items first.";
     } else {
         // =============================================
-        // FIXED: CUSTOMER DATA HANDLING FOR ITEM_POS
+        // CUSTOMER DATA HANDLING - SINGLE SOURCE
         // =============================================
         $customer_id = !empty($_POST['customer_id']) ? intval($_POST['customer_id']) : null;
         $customer_name = isset($_POST['customer_name']) ? trim($_POST['customer_name']) : '';
         $customer_phone = isset($_POST['customer_phone']) ? trim($_POST['customer_phone']) : '';
+        $sale_type = $_POST['sale_type'] ?? 'cash';
 
         // If customer ID is provided but name is empty, fetch from database
         if($customer_id && empty($customer_name)) {
@@ -166,45 +167,14 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['process_sale'])) {
             }
         }
 
-        // For credit sales, if customer doesn't exist, create one
-        // For credit sales with customer
-        if($sale_type == 'credit' && !empty($customer_name)) {
-            // If customer_id is not set but we have customer_name, create or find customer
-            if(empty($customer_id) && !empty($customer_name)) {
-                if(!empty($customer_phone)) {
-                    $stmt = $pdo->prepare("SELECT id FROM customers WHERE phone = ?");
-                    $stmt->execute([$customer_phone]);
-                    $existing = $stmt->fetch();
-                    if($existing) {
-                        $customer_id = $existing['id'];
-                        $stmt = $pdo->prepare("UPDATE customers SET customer_name = ? WHERE id = ?");
-                        $stmt->execute([$customer_name, $customer_id]);
-                    }
-                }
-                if(empty($customer_id)) {
-                    $stmt = $pdo->prepare("SELECT id FROM customers WHERE customer_name = ?");
-                    $stmt->execute([$customer_name]);
-                    $existing = $stmt->fetch();
-                    if($existing) {
-                        $customer_id = $existing['id'];
-                    } else {
-                        $stmt = $pdo->prepare("INSERT INTO customers (customer_code, customer_name, phone, credit_limit) VALUES (?, ?, ?, ?)");
-                        $customer_code = 'CUST-' . date('Ymd') . rand(100, 999);
-                        $stmt->execute([$customer_code, $customer_name, $customer_phone, 50000]);
-                        $customer_id = $pdo->lastInsertId();
-                    }
-                }
-            }
-            
-            if($customer_id) {
-                // Update customer balance for credit sale
-                $stmt = $pdo->prepare("UPDATE customers SET current_balance = current_balance + ? WHERE id = ?");
-                $stmt->execute([$total_amount, $customer_id]);
-            }
+        // If still no customer_id and credit sale, create new customer
+        if($sale_type == 'credit' && empty($customer_id) && !empty($customer_name)) {
+            $stmt = $pdo->prepare("INSERT INTO customers (customer_code, customer_name, phone, credit_limit) VALUES (?, ?, ?, ?)");
+            $customer_code = 'CUST-' . date('Ymd') . rand(100, 999);
+            $stmt->execute([$customer_code, $customer_name, $customer_phone, 50000]);
+            $customer_id = $pdo->lastInsertId();
         }
         // =============================================
-        
-        $sale_type = $_POST['sale_type'] ?? 'cash';
         
         // =============================================
         // PAYMENT METHOD VARIABLES
@@ -251,18 +221,6 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['process_sale'])) {
                         $customer_name = $customer['customer_name'];
                         $customer_phone = $customer['phone'];
                     }
-                } elseif(!empty($customer_name) && $sale_type == 'credit') {
-                    $stmt = $pdo->prepare("SELECT id FROM customers WHERE phone = ? OR customer_name = ?");
-                    $stmt->execute([$customer_phone, $customer_name]);
-                    $existing = $stmt->fetch();
-                    if($existing) {
-                        $customer_id = $existing['id'];
-                    } else {
-                        $stmt = $pdo->prepare("INSERT INTO customers (customer_code, customer_name, phone, credit_limit) VALUES (?, ?, ?, ?)");
-                        $customer_code = 'CUST-' . date('Ymd') . rand(100, 999);
-                        $stmt->execute([$customer_code, $customer_name, $customer_phone, 50000]);
-                        $customer_id = $pdo->lastInsertId();
-                    }
                 }
                 
                 // =============================================
@@ -298,6 +256,15 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['process_sale'])) {
                         $stmt->execute([$item['quantity'], $item['item_id']]);
                     }
                 }
+                
+                // =============================================
+                // UPDATE CUSTOMER BALANCE FOR CREDIT SALES
+                // =============================================
+                if($customer_id && $sale_type == 'credit') {
+                    $stmt = $pdo->prepare("UPDATE customers SET current_balance = current_balance + ? WHERE id = ?");
+                    $stmt->execute([$total_amount, $customer_id]);
+                }
+                // =============================================
                 
                 // Accounting entries
                 $stmt = $pdo->query("SELECT id FROM chart_of_accounts WHERE account_code = '1000' LIMIT 1");
@@ -340,11 +307,6 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['process_sale'])) {
                         $voucher_id, $ar_account['id'], $total_amount, 0, "Credit item sale to $customer_name - $invoice_no",
                         $voucher_id, $sales_account['id'], 0, $total_amount, "Item sales revenue - $invoice_no"
                     ]);
-                    
-                    if($customer_id) {
-                        $stmt = $pdo->prepare("UPDATE customers SET current_balance = current_balance + ? WHERE id = ?");
-                        $stmt->execute([$total_amount, $customer_id]);
-                    }
                 }
                 
                 $pdo->commit();
@@ -567,6 +529,9 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
         .payment-icon-nagad { color: #ff6b00; }
         .payment-icon-credit { color: #ffc107; }
         
+        /* New Customer Modal */
+        .modal-header .close { background: none; border: none; font-size: 1.5rem; color: white; }
+        
         @media (max-width: 768px) {
             .split-container {
                 flex-direction: column;
@@ -747,7 +712,7 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                             <form method="POST" id="checkoutForm" class="mt-3">
                                 <div class="row g-2">
                                     <!-- ============================================= -->
-                                    <!-- CUSTOMER SELECTION - ADDED -->
+                                    <!-- CUSTOMER SELECTION - SINGLE SOURCE WITH NEW CUSTOMER BUTTON -->
                                     <!-- ============================================= -->
                                     <div class="col-12">
                                         <div class="card" style="background: #f8f9fa; border: 1px solid #dee2e6;">
@@ -756,24 +721,29 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                                                     <div class="col-md-6">
                                                         <div class="mb-2">
                                                             <label><i class="fas fa-user"></i> Customer</label>
+                                                            <div class="d-flex gap-1">
                                                                 <select name="customer_id" id="customer_id" class="form-control form-control-sm" onchange="loadCustomerData(this)">
-                                                                <option value="" selected>-- Walk-in Customer --</option>
-                                                                <?php 
-                                                                $customers = $pdo->query("SELECT * FROM customers WHERE is_active = 1 ORDER BY customer_name")->fetchAll();
-                                                                foreach($customers as $c): 
-                                                                    $net = ($c['current_balance'] ?? 0) - ($c['advance_balance'] ?? 0);
-                                                                    $status = $net > 0 ? 'Due: ' . number_format($net, 2) : ($net < 0 ? 'Adv: ' . number_format(abs($net), 2) : 'Settled');
-                                                                ?>
-                                                                    <option value="<?php echo $c['id']; ?>" 
-                                                                            data-name="<?php echo $c['customer_name']; ?>"
-                                                                            data-phone="<?php echo $c['phone']; ?>"
-                                                                            data-address="<?php echo $c['address']; ?>"
-                                                                            data-balance="<?php echo $c['current_balance'] ?? 0; ?>"
-                                                                            data-advance="<?php echo $c['advance_balance'] ?? 0; ?>">
-                                                                        <?php echo $c['customer_name']; ?> (<?php echo $c['customer_code']; ?>) - <?php echo $status; ?>
-                                                                    </option>
-                                                                <?php endforeach; ?>
-                                                            </select>
+                                                                    <option value="" selected>-- Walk-in Customer --</option>
+                                                                    <?php 
+                                                                    $customers = $pdo->query("SELECT * FROM customers WHERE is_active = 1 ORDER BY customer_name")->fetchAll();
+                                                                    foreach($customers as $c): 
+                                                                        $net = ($c['current_balance'] ?? 0) - ($c['advance_balance'] ?? 0);
+                                                                        $status = $net > 0 ? 'Due: ' . number_format($net, 2) : ($net < 0 ? 'Adv: ' . number_format(abs($net), 2) : 'Settled');
+                                                                    ?>
+                                                                        <option value="<?php echo $c['id']; ?>" 
+                                                                                data-name="<?php echo $c['customer_name']; ?>"
+                                                                                data-phone="<?php echo $c['phone']; ?>"
+                                                                                data-address="<?php echo $c['address']; ?>"
+                                                                                data-balance="<?php echo $c['current_balance'] ?? 0; ?>"
+                                                                                data-advance="<?php echo $c['advance_balance'] ?? 0; ?>">
+                                                                            <?php echo $c['customer_name']; ?> (<?php echo $c['customer_code']; ?>) - <?php echo $status; ?>
+                                                                        </option>
+                                                                    <?php endforeach; ?>
+                                                                </select>
+                                                                <button type="button" class="btn btn-sm btn-success" onclick="openNewCustomerModal()" title="Add New Customer">
+                                                                    <i class="fas fa-plus"></i>
+                                                                </button>
+                                                            </div>
                                                         </div>
                                                     </div>
                                                     <div class="col-md-3">
@@ -854,16 +824,7 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                                         </div>
                                     </div>
                                     
-                                    <div id="customer_fields" style="display:none;">
-                                        <div class="col-6">
-                                            <label>Customer Name *</label>
-                                            <input type="text" name="customer_name_credit" id="customer_name_credit" class="form-control form-control-sm">
-                                        </div>
-                                        <div class="col-6">
-                                            <label>Customer Phone</label>
-                                            <input type="text" name="customer_phone_credit" id="customer_phone_credit" class="form-control form-control-sm">
-                                        </div>
-                                    </div>
+                                    <!-- REMOVED: customer_fields div (no longer needed) -->
                                     
                                     <div class="col-6">
                                         <label>Discount %</label>
@@ -942,6 +903,50 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
         </div>
     </div>
     
+    <!-- ============================================= -->
+    <!-- NEW CUSTOMER MODAL -->
+    <!-- ============================================= -->
+    <div class="modal fade" id="newCustomerModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header bg-success text-white">
+                    <h5><i class="fas fa-user-plus"></i> Add New Customer</h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <form id="newCustomerForm">
+                        <div class="mb-3">
+                            <label>Customer Name *</label>
+                            <input type="text" id="new_customer_name" class="form-control" required>
+                        </div>
+                        <div class="mb-3">
+                            <label>Phone</label>
+                            <input type="text" id="new_customer_phone" class="form-control">
+                        </div>
+                        <div class="mb-3">
+                            <label>Email</label>
+                            <input type="email" id="new_customer_email" class="form-control">
+                        </div>
+                        <div class="mb-3">
+                            <label>Address</label>
+                            <textarea id="new_customer_address" class="form-control" rows="2"></textarea>
+                        </div>
+                        <div class="mb-3">
+                            <label>Credit Limit (<?php echo $currency; ?>)</label>
+                            <input type="number" id="new_customer_credit_limit" class="form-control" step="0.01" value="50000">
+                        </div>
+                    </form>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-success" onclick="saveNewCustomer()">
+                        <i class="fas fa-save"></i> Save Customer
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+    
     <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
     <script>
@@ -949,7 +954,7 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
         let currentSubtotal = <?php echo $cart_subtotal; ?>;
         
         // =============================================
-        // CUSTOMER SELECTION FUNCTIONS - ADDED
+        // CUSTOMER SELECTION FUNCTIONS
         // =============================================
         function loadCustomerData(select) {
             var option = select.options[select.selectedIndex];
@@ -974,6 +979,80 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                 document.getElementById('customerInfo').style.display = 'none';
             }
         });
+
+        // =============================================
+        // NEW CUSTOMER FUNCTIONS
+        // =============================================
+        function openNewCustomerModal() {
+            document.getElementById('new_customer_name').value = '';
+            document.getElementById('new_customer_phone').value = '';
+            document.getElementById('new_customer_email').value = '';
+            document.getElementById('new_customer_address').value = '';
+            document.getElementById('new_customer_credit_limit').value = '50000';
+            new bootstrap.Modal(document.getElementById('newCustomerModal')).show();
+        }
+
+        function saveNewCustomer() {
+            var name = document.getElementById('new_customer_name').value.trim();
+            var phone = document.getElementById('new_customer_phone').value.trim();
+            var email = document.getElementById('new_customer_email').value.trim();
+            var address = document.getElementById('new_customer_address').value.trim();
+            var creditLimit = parseFloat(document.getElementById('new_customer_credit_limit').value) || 50000;
+
+            if(!name) {
+                alert('Please enter customer name!');
+                return;
+            }
+
+            // Check if customer already exists
+            var existingCustomer = document.querySelector('#customer_id option[data-name="' + name + '"]');
+            if(existingCustomer) {
+                alert('Customer "' + name + '" already exists! Please select from the list.');
+                document.getElementById('newCustomerModal').querySelector('.btn-close').click();
+                document.getElementById('customer_id').value = existingCustomer.value;
+                loadCustomerData(document.getElementById('customer_id'));
+                return;
+            }
+
+            // AJAX call to save customer
+            $.ajax({
+                url: 'ajax/save_customer.php',
+                method: 'POST',
+                data: {
+                    customer_name: name,
+                    phone: phone,
+                    email: email,
+                    address: address,
+                    credit_limit: creditLimit
+                },
+                success: function(response) {
+                    var result = JSON.parse(response);
+                    if(result.success) {
+                        // Add new customer to dropdown
+                        var select = document.getElementById('customer_id');
+                        var option = document.createElement('option');
+                        option.value = result.customer_id;
+                        option.dataset.name = name;
+                        option.dataset.phone = phone;
+                        option.dataset.address = address;
+                        option.dataset.balance = '0';
+                        option.dataset.advance = '0';
+                        option.text = name + ' (New) - Settled';
+                        select.appendChild(option);
+                        select.value = result.customer_id;
+                        loadCustomerData(select);
+                        
+                        document.getElementById('newCustomerModal').querySelector('.btn-close').click();
+                        alert('✅ Customer "' + name + '" added successfully!');
+                    } else {
+                        alert('Error: ' + result.message);
+                    }
+                },
+                error: function() {
+                    alert('Error saving customer. Please try again.');
+                }
+            });
+        }
 
         // =============================================
         // DRAGABLE SPLIT SCREEN
@@ -1021,16 +1100,19 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
             }
         });
 
-        // Add this to your existing JavaScript to ensure default is Walk-in
+        // =============================================
+        // FIX: Ensure Walk-in Customer is selected by default
+        // =============================================
         document.addEventListener('DOMContentLoaded', function() {
-            // Ensure Walk-in Customer is selected by default
             var customerSelect = document.getElementById('customer_id');
             if(customerSelect) {
                 customerSelect.value = '';
-                // Clear any auto-filled customer info
                 document.getElementById('customer_name').value = '';
                 document.getElementById('customer_phone').value = '';
                 document.getElementById('customerInfo').style.display = 'none';
+                document.getElementById('custBalance').innerText = '0.00';
+                document.getElementById('custAdvance').innerText = '0.00';
+                document.getElementById('custAddress').innerHTML = '';
             }
         });
 
@@ -1062,21 +1144,23 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
         
         function toggleSaleType(select) {
             const paymentSection = document.getElementById('payment_section');
-            const customerFields = document.getElementById('customer_fields');
             const cashFields = document.getElementById('cash_fields');
+            const customerSelect = document.getElementById('customer_id');
+            const customerName = document.getElementById('customer_name');
             
             if(select.value === 'credit') {
                 paymentSection.style.display = 'none';
-                customerFields.style.display = 'block';
                 cashFields.style.display = 'none';
-                document.getElementById('customer_name_credit').setAttribute('required', 'required');
                 document.getElementById('received').value = 0;
                 document.getElementById('payment_method').value = 'credit';
+                
+                // For credit sales, customer is required
+                if(!customerSelect.value && !customerName.value.trim()) {
+                    customerName.focus();
+                }
             } else {
                 paymentSection.style.display = 'block';
-                customerFields.style.display = 'none';
                 cashFields.style.display = 'block';
-                document.getElementById('customer_name_credit').removeAttribute('required');
                 document.getElementById('received').value = 0;
                 document.getElementById('payment_method').value = 'cash';
                 document.getElementById('card_details').classList.remove('show');

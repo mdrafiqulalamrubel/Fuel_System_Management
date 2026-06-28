@@ -9,7 +9,7 @@ $to_date = isset($_GET['to_date']) ? $_GET['to_date'] : date('Y-m-t');
 
 // Get all customers or suppliers for dropdown
 if($report_type == 'customer') {
-    $parties = $pdo->query("SELECT id, customer_name as name, customer_code as code FROM customers WHERE is_active = 1 ORDER BY customer_name")->fetchAll();
+    $parties = $pdo->query("SELECT id, customer_name as name, customer_code as code, phone, address, current_balance, advance_balance FROM customers WHERE is_active = 1 ORDER BY customer_name")->fetchAll();
     $party_type = 'customer';
     $party_label = 'Customer';
     $party_table = 'customers';
@@ -19,7 +19,7 @@ if($report_type == 'customer') {
     $party_name_field = 'customer_name';
     $party_code_field = 'customer_code';
 } else {
-    $parties = $pdo->query("SELECT id, supplier_name as name, supplier_code as code FROM suppliers WHERE is_active = 1 ORDER BY supplier_name")->fetchAll();
+    $parties = $pdo->query("SELECT id, supplier_name as name, supplier_code as code, phone, address, current_balance, advance_balance FROM suppliers WHERE is_active = 1 ORDER BY supplier_name")->fetchAll();
     $party_type = 'supplier';
     $party_label = 'Supplier';
     $party_table = 'suppliers';
@@ -60,7 +60,7 @@ if($party_id) {
         $opening_balance = ($advance_before['total_advance'] ?? 0) - ($advance_before['total_used'] ?? 0);
         
         // =============================================
-        // Get ALL transactions for the period
+        // Get ALL advance transactions for the period
         // =============================================
         
         // 1. ADVANCE RECEIVED (Credit - increases advance balance)
@@ -86,7 +86,6 @@ if($party_id) {
         $advance_received = $stmt->fetchAll();
         
         // 2. ADVANCE USED (Debit - reduces advance balance)
-        // Get used amounts from advance payments (if used_amount is tracked)
         $stmt = $pdo->prepare("
             SELECT 
                 advance_date as trans_date,
@@ -108,35 +107,37 @@ if($party_id) {
         ");
         $stmt->execute([$party_id, $from_date, $to_date]);
         $advance_used = $stmt->fetchAll();
-
-        // 3. ADVANCE ADJUSTMENT (from journal entries that affect advance)
-        $stmt = $pdo->prepare("
-            SELECT 
-                entry_date as trans_date,
-                reference_no as ref_no,
-                amount as amount,
-                'advance_adjustment' as trans_type,
-                NULL as payment_method,
-                NULL as receipt_no,
-                CASE WHEN entry_type = 'debit' THEN amount ELSE 0 END as debit,
-                CASE WHEN entry_type = 'credit' THEN amount ELSE 0 END as credit,
-                id as adjustment_id,
-                description,
-                notes
-            FROM journal_entries 
-            WHERE $advance_id_field = ? 
-            AND entry_date BETWEEN ? AND ?
-            AND (description LIKE '%advance%' OR description LIKE '%Advance%')
-            AND status IN ('approved', 'posted')
-            ORDER BY entry_date ASC
-        ");
-        $stmt->execute([$party_id, $from_date, $to_date]);
-        $advance_adjustments = $stmt->fetchAll();
+        
+        // 3. Advance adjustments from customer_transactions (if exists)
+        try {
+            $stmt = $pdo->prepare("
+                SELECT 
+                    transaction_date as trans_date,
+                    reference_no as ref_no,
+                    amount as amount,
+                    'advance_adjustment' as trans_type,
+                    NULL as payment_method,
+                    reference_no as receipt_no,
+                    CASE WHEN transaction_type = 'advance_used' THEN amount ELSE 0 END as debit,
+                    CASE WHEN transaction_type = 'advance_received' THEN amount ELSE 0 END as credit,
+                    id as adjustment_id,
+                    CONCAT('Advance Adjustment - ', reference_no) as description,
+                    notes
+                FROM customer_transactions 
+                WHERE $advance_id_field = ? 
+                AND transaction_date BETWEEN ? AND ?
+                AND (transaction_type = 'advance_received' OR transaction_type = 'advance_used')
+                ORDER BY transaction_date ASC
+            ");
+            $stmt->execute([$party_id, $from_date, $to_date]);
+            $advance_adjustments = $stmt->fetchAll();
+        } catch(Exception $e) {
+            $advance_adjustments = [];
+        }
 
         // Merge all transactions
         $transactions = array_merge($advance_received, $advance_used, $advance_adjustments);
-
-                
+        
         // Sort by date
         usort($transactions, function($a, $b) {
             return strtotime($a['trans_date']) - strtotime($b['trans_date']);
@@ -163,17 +164,21 @@ if($party_id) {
 
 $settings = $pdo->query("SELECT setting_key, setting_value FROM system_settings")->fetchAll(PDO::FETCH_KEY_PAIR);
 $currency = $settings['currency_symbol'] ?? 'BDT';
+$company_name = $settings['company_name'] ?? 'FF Enterprise';
 ?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Advance Payment Ledger</title>
+    <title>Advance Payment Ledger - <?php echo $party_label; ?></title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdn.datatables.net/1.11.5/css/dataTables.bootstrap5.min.css">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
+        /* ============================================= */
+        /* GENERAL STYLES */
+        /* ============================================= */
         .stats-card {
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             color: white;
@@ -184,13 +189,34 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
         }
         .stats-card:hover { transform: translateY(-5px); }
         .stats-card i { font-size: 40px; opacity: 0.5; float: right; }
+        .stats-card.blue { background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%); }
+        .stats-card.green { background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%); }
+        .stats-card.orange { background: linear-gradient(135deg, #f6d365 0%, #fda085 100%); }
         
         .badge-advance-received { background: #17a2b8; color: white; }
         .badge-advance-used { background: #ffc107; color: #856404; }
+        .badge-advance-adjustment { background: #6f42c1; color: white; }
         
         .balance-positive { color: #17a2b8; font-weight: bold; }
         .balance-negative { color: #dc3545; font-weight: bold; }
         .balance-zero { color: #6c757d; }
+        
+        /* Party Info Cards */
+        .party-card { border-radius: 10px; padding: 15px; }
+        .party-card .label { font-size: 11px; opacity: 0.8; }
+        .party-card .value { font-size: 20px; font-weight: bold; }
+        
+        .net-balance-card {
+            border-left: 5px solid;
+            border-radius: 10px;
+            padding: 15px 20px;
+            background: #f8f9fa;
+        }
+        .net-balance-card.positive { border-left-color: #17a2b8; }
+        .net-balance-card.negative { border-left-color: #dc3545; }
+        .net-balance-card.zero { border-left-color: #28a745; }
+        
+        .transaction-details { font-size: 11px; color: #666; }
         
         @media print {
             .sidebar, .no-print, .btn, .dataTables_length, .dataTables_filter, .dataTables_paginate {
@@ -198,21 +224,10 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
             }
             .main-content { margin: 0 !important; padding: 10px !important; }
             .print-header { display: block !important; text-align: center; margin-bottom: 20px; }
+            .print-header h2 { font-size: 18px; }
+            .print-header h4 { font-size: 14px; }
         }
         .print-header { display: none; }
-        
-        .transaction-details {
-            font-size: 11px;
-            color: #666;
-        }
-        
-        .net-balance-card {
-            border-left: 5px solid;
-            border-radius: 10px;
-        }
-        .net-balance-card.positive { border-left-color: #17a2b8; }
-        .net-balance-card.negative { border-left-color: #dc3545; }
-        .net-balance-card.zero { border-left-color: #28a745; }
     </style>
 </head>
 <body>
@@ -220,13 +235,19 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
     
     <div class="main-content">
         <div class="container-fluid">
+            <!-- ============================================= -->
+            <!-- PRINT HEADER (visible only in print) -->
+            <!-- ============================================= -->
             <div class="print-header">
-                <h2><?php echo $settings['company_name'] ?? 'FF Enterprise'; ?></h2>
+                <h2><?php echo htmlspecialchars($company_name); ?></h2>
                 <h4>Advance Payment Ledger - <?php echo $party_label; ?></h4>
                 <p>Period: <?php echo date('d F Y', strtotime($from_date)); ?> to <?php echo date('d F Y', strtotime($to_date)); ?></p>
                 <hr>
             </div>
             
+            <!-- ============================================= -->
+            <!-- HEADER WITH BUTTONS (visible only on screen) -->
+            <!-- ============================================= -->
             <div class="d-flex justify-content-between align-items-center mb-4">
                 <h2><i class="fas fa-file-invoice"></i> Advance Payment Ledger</h2>
                 <div class="no-print">
@@ -239,10 +260,12 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                 </div>
             </div>
             
-            <!-- Filter -->
+            <!-- ============================================= -->
+            <!-- FILTER (visible only on screen) -->
+            <!-- ============================================= -->
             <div class="card mb-4 no-print">
                 <div class="card-header bg-info text-white">
-                    <h5><i class="fas fa-filter"></i> Filter Report</h5>
+                    <h5><i class="fas fa-filter"></i> Select <?php echo $party_label; ?></h5>
                 </div>
                 <div class="card-body">
                     <form method="GET" class="row g-3">
@@ -255,11 +278,12 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                         </div>
                         <div class="col-md-3">
                             <label>Select <?php echo $party_label; ?></label>
-                            <select name="party_id" class="form-control">
-                                <option value="">-- All <?php echo $party_label; ?>s --</option>
+                            <select name="party_id" class="form-control" required>
+                                <option value="">-- Select <?php echo $party_label; ?> --</option>
                                 <?php foreach($parties as $p): ?>
                                     <option value="<?php echo $p['id']; ?>" <?php echo $party_id == $p['id'] ? 'selected' : ''; ?>>
-                                        <?php echo $p['name']; ?> (<?php echo $p['code']; ?>)
+                                        <?php echo $p['name']; ?> (<?php echo $p['code']; ?>) 
+                                        - Advance: <?php echo $currency; ?> <?php echo number_format($p['advance_balance'] ?? 0, 2); ?>
                                     </option>
                                 <?php endforeach; ?>
                             </select>
@@ -290,75 +314,101 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                 $balance_label = $is_positive ? 'Advance Balance' : ($is_zero ? 'Settled' : 'Overdrawn');
                 $balance_class = $is_positive ? 'positive' : ($is_zero ? 'zero' : 'negative');
             ?>
-                <!-- Party Info Cards -->
+                <!-- ============================================= -->
+                <!-- PARTY INFO CARDS -->
+                <!-- ============================================= -->
                 <div class="row mb-4">
-                    <div class="col-md-4">
+                    <div class="col-md-3">
                         <div class="card text-white bg-info">
                             <div class="card-body">
-                                <h6><?php echo $party_label; ?> Name</h6>
+                                <h6><i class="fas fa-user"></i> <?php echo $party_label; ?> Name</h6>
                                 <h4><?php echo htmlspecialchars($party[$party_name_field]); ?></h4>
                                 <small>Code: <?php echo $party[$party_code_field]; ?></small>
                             </div>
                         </div>
                     </div>
-                    <div class="col-md-4">
+                    <div class="col-md-3">
                         <div class="card text-white bg-secondary">
                             <div class="card-body">
-                                <h6>Contact</h6>
+                                <h6><i class="fas fa-phone"></i> Contact</h6>
                                 <h4><?php echo $party['phone'] ?: 'N/A'; ?></h4>
                                 <small><?php echo $party['address'] ?: 'No address'; ?></small>
                             </div>
                         </div>
                     </div>
-                    <div class="col-md-4">
-                        <div class="card text-white bg-<?php echo $is_positive ? 'info' : ($is_zero ? 'success' : 'danger'); ?>">
+                    <div class="col-md-3">
+                        <div class="card text-white bg-<?php echo $is_positive ? 'primary' : ($is_zero ? 'success' : 'danger'); ?>">
                             <div class="card-body">
-                                <h6>Current Balance</h6>
+                                <h6><i class="fas fa-money-bill"></i> Current Advance</h6>
                                 <h4>
                                     <?php if($is_zero): ?>
                                         <?php echo $currency; ?> 0.00
                                     <?php else: ?>
                                         <?php echo $currency; ?> <?php echo number_format($display_balance, 2); ?>
-                                        (<?php echo $is_positive ? 'Advance' : 'Overdrawn'; ?>)
                                     <?php endif; ?>
                                 </h4>
+                                <small><?php echo $balance_label; ?></small>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="card text-white bg-<?php echo $is_positive ? 'info' : ($is_zero ? 'success' : 'warning'); ?>">
+                            <div class="card-body">
+                                <h6><i class="fas fa-calendar-alt"></i> Status</h6>
+                                <h4>
+                                    <?php if($is_positive): ?>
+                                        <i class="fas fa-check-circle"></i> Active
+                                    <?php elseif($is_zero): ?>
+                                        <i class="fas fa-check-circle"></i> Settled
+                                    <?php else: ?>
+                                        <i class="fas fa-exclamation-triangle"></i> Overdrawn
+                                    <?php endif; ?>
+                                </h4>
+                                <small><?php echo count($transactions); ?> transactions</small>
                             </div>
                         </div>
                     </div>
                 </div>
                 
-                <!-- Opening Balance -->
+                <!-- ============================================= -->
+                <!-- OPENING BALANCE -->
+                <!-- ============================================= -->
                 <div class="row mb-4">
                     <div class="col-md-12">
-                        <div class="card net-balance-card <?php echo $balance_class; ?>">
-                            <div class="card-body">
-                                <strong>Opening Balance (as on <?php echo date('d M Y', strtotime($from_date)); ?>):</strong>
-                                <span class="h4 <?php echo $opening_balance > 0 ? 'balance-positive' : ($opening_balance < 0 ? 'balance-negative' : 'balance-zero'); ?>">
-                                    <?php echo $currency; ?> <?php echo number_format(abs($opening_balance), 2); ?>
-                                    <?php echo $opening_balance > 0 ? '(Advance)' : ($opening_balance < 0 ? '(Overdrawn)' : ''); ?>
-                                </span>
-                            </div>
+                        <div class="net-balance-card <?php echo $balance_class; ?>">
+                            <strong><i class="fas fa-calendar-alt"></i> Opening Balance (as on <?php echo date('d M Y', strtotime($from_date)); ?>):</strong>
+                            <span class="h4 <?php echo $opening_balance > 0 ? 'balance-positive' : ($opening_balance < 0 ? 'balance-negative' : 'balance-zero'); ?>">
+                                <?php echo $currency; ?> <?php echo number_format(abs($opening_balance), 2); ?>
+                                <?php echo $opening_balance > 0 ? '(Advance)' : ($opening_balance < 0 ? '(Overdrawn)' : ''); ?>
+                            </span>
                         </div>
                     </div>
                 </div>
                 
-                <!-- Ledger Table -->
+                <!-- ============================================= -->
+                <!-- ADVANCE LEDGER TABLE -->
+                <!-- ============================================= -->
                 <div class="card">
                     <div class="card-header bg-success text-white">
-                        <h5>Advance Ledger Statement (<?php echo date('d M Y', strtotime($from_date)); ?> to <?php echo date('d M Y', strtotime($to_date)); ?>)</h5>
-                        <small class="d-block text-light">Shows all advance transactions with running balance</small>
+                        <h5><i class="fas fa-list"></i> Advance Ledger Statement</h5>
+                        <small class="d-block text-light">
+                            <?php echo date('d M Y', strtotime($from_date)); ?> to <?php echo date('d M Y', strtotime($to_date)); ?>
+                            <?php if(!empty($transactions)): ?>
+                                | <?php echo count($transactions); ?> transactions found
+                            <?php endif; ?>
+                        </small>
                     </div>
                     <div class="card-body">
                         <div class="table-responsive">
-                            <table class="table table-bordered" id="advanceLedgerTable">
+                            <table class="table table-bordered table-striped" id="advanceLedgerTable">
                                 <thead class="table-dark">
                                     <tr>
-                                        <th>Date</th>
-                                        <th>Reference</th>
-                                        <th>Particulars</th>
-                                        <th class="text-end">Debit (<?php echo $currency; ?>)</th>
-                                        <th class="text-end">Credit (<?php echo $currency; ?>)</th>
-                                        <th class="text-end">Balance (<?php echo $currency; ?>)</th>
+                                        <th style="width:12%;">Date</th>
+                                        <th style="width:15%;">Reference</th>
+                                        <th style="width:30%;">Particulars</th>
+                                        <th class="text-end" style="width:13%;">Debit (<?php echo $currency; ?>)</th>
+                                        <th class="text-end" style="width:13%;">Credit (<?php echo $currency; ?>)</th>
+                                        <th class="text-end" style="width:17%;">Balance (<?php echo $currency; ?>)</th>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -389,8 +439,9 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                                     
                                     <?php if(empty($transactions)): ?>
                                         <tr>
-                                            <td colspan="6" class="text-center text-muted py-4">
-                                                <i class="fas fa-info-circle"></i> No transactions found for this period
+                                            <td colspan="6" class="text-center text-muted py-5">
+                                                <i class="fas fa-info-circle fa-2x d-block mb-2"></i>
+                                                No advance transactions found for this period
                                             </td>
                                         </tr>
                                     <?php else: ?>
@@ -413,6 +464,11 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                                                     $type_badge = 'badge-advance-used';
                                                     $type_icon = 'fa-check-circle';
                                                     break;
+                                                case 'advance_adjustment':
+                                                    $type_label = 'Advance Adjustment';
+                                                    $type_badge = 'badge-advance-adjustment';
+                                                    $type_icon = 'fa-adjust';
+                                                    break;
                                                 default:
                                                     $type_label = ucfirst(str_replace('_', ' ', $t['trans_type']));
                                                     $type_badge = 'badge-secondary';
@@ -434,7 +490,7 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                                                     <br><small class="text-muted">Method: <?php echo ucfirst($t['payment_method'] ?? 'N/A'); ?></small>
                                                 <?php endif; ?>
                                                 <?php if(!empty($t['notes'])): ?>
-                                                    <br><small class="text-muted">Notes: <?php echo htmlspecialchars($t['notes']); ?></small>
+                                                    <br><small class="text-muted">Notes: <?php echo htmlspecialchars(substr($t['notes'], 0, 50)); ?></small>
                                                 <?php endif; ?>
                                             </td>
                                             <td class="text-end <?php echo ($t['debit'] ?? 0) > 0 ? 'text-danger fw-bold' : ''; ?>">
@@ -469,12 +525,14 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                     </div>
                 </div>
                 
-                <!-- Summary Cards -->
+                <!-- ============================================= -->
+                <!-- SUMMARY CARDS -->
+                <!-- ============================================= -->
                 <div class="row mt-4">
                     <div class="col-md-3">
                         <div class="card text-white bg-danger">
                             <div class="card-body">
-                                <h6>Total Debit (Used)</h6>
+                                <h6><i class="fas fa-arrow-down"></i> Total Debit (Used)</h6>
                                 <h3><?php echo $currency; ?> <?php echo number_format($total_debit, 2); ?></h3>
                             </div>
                         </div>
@@ -482,7 +540,7 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                     <div class="col-md-3">
                         <div class="card text-white bg-success">
                             <div class="card-body">
-                                <h6>Total Credit (Received)</h6>
+                                <h6><i class="fas fa-arrow-up"></i> Total Credit (Received)</h6>
                                 <h3><?php echo $currency; ?> <?php echo number_format($total_credit, 2); ?></h3>
                             </div>
                         </div>
@@ -490,7 +548,7 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                     <div class="col-md-3">
                         <div class="card text-white bg-warning">
                             <div class="card-body">
-                                <h6>Net Movement</h6>
+                                <h6><i class="fas fa-exchange-alt"></i> Net Movement</h6>
                                 <h3><?php echo $currency; ?> <?php echo number_format(abs($total_credit - $total_debit), 2); ?></h3>
                             </div>
                         </div>
@@ -498,7 +556,7 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                     <div class="col-md-3">
                         <div class="card text-white bg-info">
                             <div class="card-body">
-                                <h6>Total Transactions</h6>
+                                <h6><i class="fas fa-list"></i> Total Transactions</h6>
                                 <h3><?php echo count($transactions); ?></h3>
                             </div>
                         </div>
@@ -506,14 +564,34 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                 </div>
                 
             <?php elseif($party_id): ?>
-                <div class="alert alert-danger"><?php echo $party_label; ?> not found!</div>
+                <div class="alert alert-danger text-center py-4">
+                    <i class="fas fa-exclamation-circle fa-2x d-block mb-2"></i>
+                    <h5><?php echo $party_label; ?> not found!</h5>
+                    <p class="text-muted">Please select a valid <?php echo strtolower($party_label); ?> from the dropdown.</p>
+                </div>
             <?php else: ?>
                 <div class="alert alert-info text-center py-5">
-                    <i class="fas fa-info-circle fa-2x d-block mb-3"></i>
-                    <h5>Please select a <?php echo strtolower($party_label); ?> to view advance ledger</h5>
-                    <p class="text-muted">Select a <?php echo strtolower($party_label); ?> from the dropdown above and click Generate</p>
+                    <i class="fas fa-info-circle fa-3x d-block mb-3"></i>
+                    <h4>Please select a <?php echo strtolower($party_label); ?></h4>
+                    <p class="text-muted">Choose a <?php echo strtolower($party_label); ?> from the dropdown above and click Generate to view the advance ledger.</p>
                 </div>
             <?php endif; ?>
+            
+            <!-- ============================================= -->
+            <!-- FOOTER (visible only on screen) -->
+            <!-- ============================================= -->
+            <div class="footer-note no-print mt-4 text-center text-muted" style="font-size:12px; border-top:1px solid #ddd; padding-top:15px;">
+                <i class="fas fa-info-circle"></i>
+                <strong>Report Summary:</strong> 
+                <?php if($party): ?>
+                    <?php echo $party_label; ?>: <?php echo htmlspecialchars($party[$party_name_field]); ?> | 
+                    Balance: <?php echo $currency; ?> <?php echo number_format($display_balance, 2); ?> (<?php echo $balance_label; ?>) |
+                    Transactions: <?php echo count($transactions); ?>
+                <?php else: ?>
+                    No <?php echo strtolower($party_label); ?> selected
+                <?php endif; ?>
+                <br><small>Click <strong>Print</strong> button for print view.</small>
+            </div>
         </div>
     </div>
     

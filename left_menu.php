@@ -342,6 +342,11 @@ $user_role = $user['role'] ?? 'guest';
             <i class="fas fa-chevron-right chevron" id="customerChevron"></i> CUSTOMER MANAGEMENT
         </li>
         <div class="dropdown-menu-custom" id="customerSection">
+            <li class="nav-item <?php echo $current_page == 'customer_management.php' ? 'active' : ''; ?>">
+                <a class="nav-link" href="customer_management.php">
+                    <i class="fas fa-user-plus"></i> <span>Add/Edit Customer</span>
+                </a>
+            </li>
             <li class="nav-item <?php echo $current_page == 'customer_ledger.php' ? 'active' : ''; ?>">
                 <a class="nav-link" href="customer_ledger.php">
                     <i class="fas fa-users"></i> <span>Customer Ledger</span>

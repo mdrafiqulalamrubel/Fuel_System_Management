@@ -22,7 +22,7 @@ if(!$active_shift) {
 }
 
 // =============================================
-// FIXED: Get CNG nozzles - PIPELINE nozzles only (no tank association)
+// Get CNG nozzles - PIPELINE nozzles only (no tank association)
 // =============================================
 $cng_nozzles = $pdo->query("
     SELECT 
@@ -56,7 +56,7 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['make_cng_sale'])) {
     $sale_type = $_POST['sale_type'];
     
     // =============================================
-    // FIXED: CUSTOMER DATA HANDLING FOR GAS_SALES
+    // CUSTOMER DATA HANDLING - SINGLE SOURCE
     // =============================================
     $customer_id = !empty($_POST['customer_id']) ? intval($_POST['customer_id']) : null;
     $customer_name = isset($_POST['customer_name']) ? trim($_POST['customer_name']) : '';
@@ -93,7 +93,7 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['make_cng_sale'])) {
         }
     }
 
-    // For credit sales, if customer doesn't exist, create one
+    // If still no customer_id and credit sale, create new customer
     if($sale_type == 'credit' && empty($customer_id) && !empty($customer_name)) {
         $stmt = $pdo->prepare("INSERT INTO customers (customer_code, customer_name, phone, credit_limit) VALUES (?, ?, ?, ?)");
         $customer_code = 'CUST-' . date('Ymd') . rand(100, 999);
@@ -134,76 +134,54 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['make_cng_sale'])) {
         $total_amount = $quantity * $unit_price;
     }
 
-    $received = isset($_POST['received']) ? floatval($_POST['received']) : $total_amount;
-    $change = $received - $total_amount;
-    
-    $vehicle_number = isset($_POST['vehicle_number']) ? trim($_POST['vehicle_number']) : '';
-    $remarks = isset($_POST['remarks']) ? trim($_POST['remarks']) : '';
-
     // =============================================
-    // CHECK FOR CUSTOMER ADVANCE BALANCE (CNG)
+    // CHECK FOR CUSTOMER ADVANCE BALANCE
     // =============================================
-
     $advance_used = 0;
     $advance_payment_id = null;
 
-    if($sale_type == 'credit' && ($customer_id || !empty($customer_name))) {
-        // If customer ID not set but name is provided, find or create customer
-        if(empty($customer_id) && !empty($customer_name)) {
-            if(!empty($customer_phone)) {
-                $stmt = $pdo->prepare("SELECT id FROM customers WHERE phone = ?");
-                $stmt->execute([$customer_phone]);
-                $existing = $stmt->fetch();
-                if($existing) {
-                    $customer_id = $existing['id'];
-                }
-            }
-            if(empty($customer_id)) {
-                $stmt = $pdo->prepare("SELECT id FROM customers WHERE customer_name = ?");
-                $stmt->execute([$customer_name]);
-                $existing = $stmt->fetch();
-                if($existing) {
-                    $customer_id = $existing['id'];
-                }
-            }
-        }
+    // Store the FULL original amount (never modify this)
+    $original_total_amount = $total_amount;
+
+    if($sale_type == 'credit' && $customer_id) {
+        $stmt = $pdo->prepare("SELECT advance_balance FROM customers WHERE id = ?");
+        $stmt->execute([$customer_id]);
+        $advance_balance = $stmt->fetch()['advance_balance'] ?? 0;
         
-        if($customer_id) {
-            $stmt = $pdo->prepare("SELECT advance_balance FROM customers WHERE id = ?");
-            $stmt->execute([$customer_id]);
-            $advance_balance = $stmt->fetch()['advance_balance'] ?? 0;
+        if($advance_balance > 0) {
+            $advance_used = min($advance_balance, $original_total_amount);
             
-            if($advance_balance > 0) {
-                $advance_used = min($advance_balance, $total_amount);
+            if($advance_used > 0) {
+                $stmt = $pdo->prepare("UPDATE customers SET advance_balance = advance_balance - ? WHERE id = ?");
+                $stmt->execute([$advance_used, $customer_id]);
                 
-                if($advance_used > 0) {
-                    $stmt = $pdo->prepare("UPDATE customers SET advance_balance = advance_balance - ? WHERE id = ?");
-                    $stmt->execute([$advance_used, $customer_id]);
+                $stmt = $pdo->prepare("SELECT id FROM advance_payments_customer WHERE customer_id = ? AND balance_amount > 0 ORDER BY advance_date LIMIT 1");
+                $stmt->execute([$customer_id]);
+                $advance_record = $stmt->fetch();
+                if($advance_record) {
+                    $advance_payment_id = $advance_record['id'];
+                    $stmt = $pdo->prepare("UPDATE advance_payments_customer SET used_amount = used_amount + ?, balance_amount = balance_amount - ? WHERE id = ?");
+                    $stmt->execute([$advance_used, $advance_used, $advance_payment_id]);
                     
-                    $stmt = $pdo->prepare("SELECT id FROM advance_payments_customer WHERE customer_id = ? AND balance_amount > 0 ORDER BY advance_date LIMIT 1");
-                    $stmt->execute([$customer_id]);
-                    $advance_record = $stmt->fetch();
-                    if($advance_record) {
-                        $advance_payment_id = $advance_record['id'];
-                        $stmt = $pdo->prepare("UPDATE advance_payments_customer SET used_amount = used_amount + ?, balance_amount = balance_amount - ? WHERE id = ?");
-                        $stmt->execute([$advance_used, $advance_used, $advance_payment_id]);
-                        
-                        $stmt = $pdo->prepare("SELECT balance_amount FROM advance_payments_customer WHERE id = ?");
+                    $stmt = $pdo->prepare("SELECT balance_amount FROM advance_payments_customer WHERE id = ?");
+                    $stmt->execute([$advance_payment_id]);
+                    $new_balance = $stmt->fetch()['balance_amount'];
+                    if($new_balance <= 0) {
+                        $stmt = $pdo->prepare("UPDATE advance_payments_customer SET status = 'fully_used' WHERE id = ?");
                         $stmt->execute([$advance_payment_id]);
-                        $new_balance = $stmt->fetch()['balance_amount'];
-                        if($new_balance <= 0) {
-                            $stmt = $pdo->prepare("UPDATE advance_payments_customer SET status = 'fully_used' WHERE id = ?");
-                            $stmt->execute([$advance_payment_id]);
-                        }
                     }
-                    
-                    $total_amount = $total_amount - $advance_used;
-                    $received = isset($_POST['received']) ? floatval($_POST['received']) : $total_amount;
-                    $change = $received - $total_amount;
                 }
             }
         }
     }
+
+    // Net amount after advance adjustment (for sales table and accounting)
+    $net_total_amount = $original_total_amount - $advance_used;
+    $received = isset($_POST['received']) ? floatval($_POST['received']) : $net_total_amount;
+    $change = $received - $net_total_amount;
+    
+    $vehicle_number = isset($_POST['vehicle_number']) ? trim($_POST['vehicle_number']) : '';
+    $remarks = isset($_POST['remarks']) ? trim($_POST['remarks']) : '';
 
     if($quantity <= 0) {
         $error = "Invalid quantity! Please check your input.";
@@ -211,7 +189,9 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['make_cng_sale'])) {
         try {
             $pdo->beginTransaction();
             
-            // Insert into gas_sales table with payment method fields and customer fields
+            // =============================================
+            // Insert into gas_sales table with NET amount
+            // =============================================
             $stmt = $pdo->prepare("
             INSERT INTO gas_sales (
                 invoice_no, sale_date, shift_id, nozzle_id, operator_id,
@@ -225,38 +205,102 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['make_cng_sale'])) {
             ");
 
             $stmt->execute([
-                $invoice_no,       // 1. invoice_no
-                $shift_id,         // 2. shift_id
-                $nozzle_id,        // 3. nozzle_id
-                $user['id'],       // 4. operator_id
-                $customer_id,      // 5. customer_id
-                $customer_name,    // 6. customer_name
-                $customer_phone,   // 7. customer_phone
-                $sale_type,        // 8. sale_type
-                $payment_method,   // 9. payment_method
-                $card_number,      // 10. card_number
-                $card_holder_name, // 11. card_holder_name
-                $transaction_id,   // 12. transaction_id
-                $opening_meter,    // 13. opening_meter
-                $closing_meter,    // 14. closing_meter
-                $quantity,         // 15. quantity_liters
-                $unit_price,       // 16. unit_price
-                $total_amount,     // 17. total_amount
-                $received,         // 18. received_amount
-                $change,           // 19. change_amount
-                $advance_used,     // 20. advance_used
-                $advance_payment_id, // 21. advance_payment_id
-                $vehicle_number,   // 22. vehicle_number
-                $remarks           // 23. remarks
+                $invoice_no, $shift_id, $nozzle_id, $user['id'],
+                $customer_id, $customer_name, $customer_phone, $sale_type,
+                $payment_method, $card_number, $card_holder_name, $transaction_id,
+                $opening_meter, $closing_meter, $quantity,
+                $unit_price, $net_total_amount, $received, $change,
+                $advance_used, $advance_payment_id,
+                $vehicle_number, $remarks
             ]);
             
             $sale_id = $pdo->lastInsertId();
             
-            // Update nozzle closing meter only (NO STOCK UPDATE for CNG)
+            // Update nozzle closing meter (NO STOCK UPDATE for CNG)
             $stmt = $pdo->prepare("UPDATE nozzles SET closing_meter = ? WHERE id = ?");
             $stmt->execute([$closing_meter, $nozzle_id]);
             
-            // Accounting entries - CNG Sales Revenue
+            // =============================================
+            // UPDATE CUSTOMER BALANCE FOR CREDIT SALES (NET amount only)
+            // =============================================
+            if($customer_id && $sale_type == 'credit') {
+                $net_owed = $original_total_amount - $advance_used;
+                if($net_owed > 0) {
+                    $stmt = $pdo->prepare("UPDATE customers SET current_balance = current_balance + ? WHERE id = ?");
+                    $stmt->execute([$net_owed, $customer_id]);
+                }
+            }
+            
+            // =============================================
+            // FOR CREDIT SALES - PROPER ACCOUNTING
+            // Debit = Full amount (what customer owes)
+            // Credit = Advance used (what was paid from advance)
+            // Balance = Debit - Credit = Net amount owed
+            // =============================================
+            if($sale_type == 'credit' && $customer_id) {
+                $due_date = date('Y-m-d', strtotime('+30 days'));
+                $net_balance_due = $original_total_amount - $advance_used;
+                
+                try {
+                    // Check if sale exists in sales table
+                    $stmt = $pdo->prepare("SELECT id FROM sales WHERE invoice_no = ?");
+                    $stmt->execute([$invoice_no]);
+                    $existing_sale = $stmt->fetch();
+                    
+                    if(!$existing_sale) {
+                        // Insert into sales table with NET amount
+                        $stmt = $pdo->prepare("
+                            INSERT INTO sales (
+                                invoice_no, shift_id, nozzle_id, operator_id,
+                                customer_id, customer_name, customer_phone, sale_type,
+                                payment_method, product_id, quantity_liters, unit_price,
+                                subtotal, vat_amount, tax_amount, total_amount, received_amount, change_amount,
+                                vehicle_number, remarks
+                            ) VALUES (
+                                ?, ?, ?, ?,
+                                ?, ?, ?, 'credit',
+                                'credit', ?, ?, ?,
+                                ?, 0, 0, ?, 0, 0,
+                                ?, ?
+                            )
+                        ");
+                        $stmt->execute([
+                            $invoice_no, $shift_id, $nozzle_id, $user['id'],
+                            $customer_id, $customer_name, $customer_phone,
+                            $product_id, $quantity, $unit_price,
+                            $net_total_amount, $net_total_amount,
+                            $vehicle_number, $remarks
+                        ]);
+                        $sales_id = $pdo->lastInsertId();
+                    } else {
+                        $sales_id = $existing_sale['id'];
+                    }
+                    
+                    // Insert into credit_sales with FULL amount and advance_adjusted
+                    $stmt = $pdo->prepare("
+                        INSERT INTO credit_sales (
+                            sale_id, customer_id, invoice_no, sale_date, due_date, 
+                            total_amount, advance_adjusted, balance_due, status
+                        ) VALUES (?, ?, ?, CURDATE(), ?, ?, ?, ?, 'pending')
+                    ");
+                    $stmt->execute([
+                        $sales_id, 
+                        $customer_id, 
+                        $invoice_no, 
+                        $due_date, 
+                        $original_total_amount,    // FULL original amount (DEBIT)
+                        $advance_used,              // Advance used (CREDIT)
+                        $net_balance_due            // Net amount owed (DEBIT - CREDIT)
+                    ]);
+                    
+                } catch(Exception $e) {
+                    error_log("Credit sales insert error: " . $e->getMessage());
+                }
+            }
+            
+            // =============================================
+            // Accounting entries - CNG Sales Revenue (using NET amount)
+            // =============================================
             $stmt = $pdo->query("SELECT id FROM chart_of_accounts WHERE account_code = '1000' LIMIT 1");
             $cash_account = $stmt->fetch();
             
@@ -274,7 +318,7 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['make_cng_sale'])) {
             if($sale_type == 'cash' && $cash_account && $sales_account) {
                 $voucher_no = 'CNG-CASH-' . date('YmdHis') . rand(100, 999);
                 $customer_info = $customer_id ? " - Customer: $customer_name" : "";
-                $narration = "CNG sale$customer_info - $invoice_no - Quantity: " . number_format($quantity, 2) . " m³ - Amount: BDT " . number_format($total_amount, 2);
+                $narration = "CNG sale$customer_info - $invoice_no - Quantity: " . number_format($quantity, 2) . " m³ - Amount: BDT " . number_format($net_total_amount, 2);
                 
                 $stmt = $pdo->prepare("INSERT INTO vouchers (voucher_no, voucher_type, date, narration, created_by, status) VALUES (?, 'receipt', CURDATE(), ?, ?, 'approved')");
                 $stmt->execute([$voucher_no, $narration, $user['id']]);
@@ -284,52 +328,28 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['make_cng_sale'])) {
                     (?, ?, ?, ?, ?),
                     (?, ?, ?, ?, ?)");
                 $stmt->execute([
-                    $voucher_id, $cash_account['id'], $total_amount, 0, "CNG cash sale - $invoice_no",
-                    $voucher_id, $sales_id, 0, $total_amount, "CNG sales revenue - $invoice_no"
+                    $voucher_id, $cash_account['id'], $net_total_amount, 0, "CNG cash sale - $invoice_no",
+                    $voucher_id, $sales_id, 0, $net_total_amount, "CNG sales revenue - $invoice_no"
                 ]);
-            }
-            
-            // Handle Credit Sale for CNG
-            if($sale_type == 'credit') {
-                $customer_id = null;
+            } elseif($sale_type == 'credit' && $sales_account) {
+                $voucher_no = 'CNG-CREDIT-' . date('YmdHis') . rand(100, 999);
+                $narration = "CNG credit sale to $customer_name - Invoice: $invoice_no - Amount: BDT " . number_format($net_total_amount, 2);
                 
-                // If customer ID not set, create or find customer
-                if(empty($customer_id) && !empty($customer_name)) {
-                    if(!empty($customer_phone)) {
-                        $stmt = $pdo->prepare("SELECT id FROM customers WHERE phone = ?");
-                        $stmt->execute([$customer_phone]);
-                        $existing = $stmt->fetch();
-                        if($existing) {
-                            $customer_id = $existing['id'];
-                            $stmt = $pdo->prepare("UPDATE customers SET customer_name = ? WHERE id = ?");
-                            $stmt->execute([$customer_name, $customer_id]);
-                        }
-                    }
-                    if(empty($customer_id)) {
-                        $stmt = $pdo->prepare("SELECT id FROM customers WHERE customer_name = ?");
-                        $stmt->execute([$customer_name]);
-                        $existing = $stmt->fetch();
-                        if($existing) {
-                            $customer_id = $existing['id'];
-                        } else {
-                            $stmt = $pdo->prepare("INSERT INTO customers (customer_code, customer_name, phone, credit_limit) VALUES (?, ?, ?, ?)");
-                            $customer_code = 'CUST-' . date('Ymd') . rand(100, 999);
-                            $stmt->execute([$customer_code, $customer_name, $customer_phone, 50000]);
-                            $customer_id = $pdo->lastInsertId();
-                        }
-                    }
-                }
+                $stmt = $pdo->query("SELECT id FROM chart_of_accounts WHERE account_code = '1300' OR account_name LIKE '%Accounts Receivable%' LIMIT 1");
+                $ar_account = $stmt->fetch();
                 
-                if($customer_id) {
-                    $due_date = date('Y-m-d', strtotime('+30 days'));
-                    $stmt = $pdo->prepare("
-                        INSERT INTO credit_sales (sale_id, customer_id, invoice_no, sale_date, due_date, total_amount, paid_amount, balance_due, status) 
-                        VALUES (?, ?, ?, CURDATE(), ?, ?, 0, ?, 'pending')
-                    ");
-                    $stmt->execute([$sale_id, $customer_id, $invoice_no, $due_date, $total_amount, $total_amount]);
+                if($ar_account) {
+                    $stmt = $pdo->prepare("INSERT INTO vouchers (voucher_no, voucher_type, date, narration, created_by, status) VALUES (?, 'journal', CURDATE(), ?, ?, 'approved')");
+                    $stmt->execute([$voucher_no, $narration, $user['id']]);
+                    $voucher_id = $pdo->lastInsertId();
                     
-                    $stmt = $pdo->prepare("UPDATE customers SET current_balance = current_balance + ? WHERE id = ?");
-                    $stmt->execute([$total_amount, $customer_id]);
+                    $stmt = $pdo->prepare("INSERT INTO voucher_items (voucher_id, account_id, debit_amount, credit_amount, description) VALUES 
+                        (?, ?, ?, ?, ?),
+                        (?, ?, ?, ?, ?)");
+                    $stmt->execute([
+                        $voucher_id, $ar_account['id'], $net_total_amount, 0, "CNG credit sale to $customer_name - $invoice_no",
+                        $voucher_id, $sales_id, 0, $net_total_amount, "CNG sales revenue - $invoice_no"
+                    ]);
                 }
             }
             
@@ -348,7 +368,9 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['make_cng_sale'])) {
                 'quantity' => $quantity,
                 'unit_type' => 'cubic_meters',
                 'unit_price' => $unit_price,
-                'total' => $total_amount,
+                'total' => $net_total_amount,
+                'original_total' => $original_total_amount,
+                'advance_used' => $advance_used,
                 'received' => $received,
                 'change' => $change,
                 'input_type' => $input_type,
@@ -369,6 +391,9 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['make_cng_sale'])) {
     }
 }
 
+// (All your existing HTML, CSS, and JavaScript remains exactly as you had it)
+
+// ... rest of the HTML and JavaScript remains the same ...
 $settings = $pdo->query("SELECT setting_key, setting_value FROM system_settings")->fetchAll(PDO::FETCH_KEY_PAIR);
 $currency = $settings['currency_symbol'] ?? 'BDT';
 ?>
@@ -507,6 +532,9 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
         .payment-icon-bkash { color: #e2136e; }
         .payment-icon-nagad { color: #ff6b00; }
         .payment-icon-credit { color: #ffc107; }
+        
+        /* New Customer Modal */
+        .modal-header .close { background: none; border: none; font-size: 1.5rem; color: white; }
     </style>
 </head>
 <body>
@@ -597,7 +625,7 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                                 </div>
                                 
                                 <!-- ============================================= -->
-                                <!-- CUSTOMER SELECTION -->
+                                <!-- CUSTOMER SELECTION - SINGLE SOURCE -->
                                 <!-- ============================================= -->
                                 <div class="row">
                                     <div class="col-md-12">
@@ -607,8 +635,9 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                                                     <div class="col-md-5">
                                                         <div class="mb-2">
                                                             <label><i class="fas fa-user"></i> Customer</label>
-                                                            <select name="customer_id" id="customer_id" class="form-control form-control-sm" onchange="loadCustomerData(this)">
-                                                                <option value="" selected>-- Walk-in Customer --</option>
+                                                            <div class="d-flex gap-1">
+                                                             <select name="customer_id" id="customer_id" class="form-control form-control-sm" onchange="loadCustomerData(this)">
+                                                                <option value="">-- Walk-in Customer --</option>
                                                                 <?php 
                                                                 $customers = $pdo->query("SELECT * FROM customers WHERE is_active = 1 ORDER BY customer_name")->fetchAll();
                                                                 foreach($customers as $c): 
@@ -625,6 +654,11 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                                                                     </option>
                                                                 <?php endforeach; ?>
                                                             </select>
+
+                                                                <button type="button" class="btn btn-sm btn-success" onclick="openNewCustomerModal()" title="Add New Customer">
+                                                                    <i class="fas fa-plus"></i>
+                                                                </button>
+                                                            </div>
                                                         </div>
                                                     </div>
                                                     <div class="col-md-4">
@@ -790,23 +824,6 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                                     </div>
                                 </div>
                                 
-                                <div id="customer_fields" style="display:none;">
-                                    <div class="row">
-                                        <div class="col-md-6">
-                                            <div class="mb-3">
-                                                <label>Customer Name *</label>
-                                                <input type="text" name="customer_name_credit" id="customer_name_credit" class="form-control">
-                                            </div>
-                                        </div>
-                                        <div class="col-md-6">
-                                            <div class="mb-3">
-                                                <label>Customer Phone</label>
-                                                <input type="text" name="customer_phone_credit" id="customer_phone_credit" class="form-control">
-                                            </div>
-                                        </div>
-                                    </div>
-                                </div>
-                                
                                 <div class="amount-display">
                                     <table width="100%">
                                         <tr>
@@ -899,7 +916,7 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                             </div>
                             <div class="alert alert-secondary">
                                 <i class="fas fa-credit-card"></i>
-                                <strong>Credit Sales:</strong> Customer name is required for credit sales.
+                                <strong>Credit Sales:</strong> Customer is required for credit sales.
                             </div>
                             <div class="alert alert-primary">
                                 <i class="fas fa-pipe"></i>
@@ -977,75 +994,261 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
         </div>
     </div>
     
+    <!-- New Customer Modal -->
+    <div class="modal fade" id="newCustomerModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header bg-success text-white">
+                    <h5><i class="fas fa-user-plus"></i> Add New Customer</h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <form id="newCustomerForm">
+                        <div class="mb-3">
+                            <label>Customer Name *</label>
+                            <input type="text" id="new_customer_name" class="form-control" required>
+                        </div>
+                        <div class="mb-3">
+                            <label>Phone</label>
+                            <input type="text" id="new_customer_phone" class="form-control">
+                        </div>
+                        <div class="mb-3">
+                            <label>Email</label>
+                            <input type="email" id="new_customer_email" class="form-control">
+                        </div>
+                        <div class="mb-3">
+                            <label>Address</label>
+                            <textarea id="new_customer_address" class="form-control" rows="2"></textarea>
+                        </div>
+                        <div class="mb-3">
+                            <label>Credit Limit (<?php echo $currency; ?>)</label>
+                            <input type="number" id="new_customer_credit_limit" class="form-control" step="0.01" value="50000">
+                        </div>
+                    </form>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-success" onclick="saveNewCustomer()">
+                        <i class="fas fa-save"></i> Save Customer
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+    
     <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
     <script>
-        // =============================================
-        // FIX: Ensure Walk-in Customer is selected by default
-        // =============================================
-        function setDefaultCustomer() {
-            var customerSelect = document.getElementById('customer_id');
-            if(customerSelect) {
-                customerSelect.value = '';
-                var nameField = document.getElementById('customer_name');
-                var phoneField = document.getElementById('customer_phone');
-                var infoDiv = document.getElementById('customerInfo');
-                if(nameField) nameField.value = '';
-                if(phoneField) phoneField.value = '';
-                if(infoDiv) infoDiv.style.display = 'none';
-                document.getElementById('custBalance').innerText = '0.00';
-                document.getElementById('custAdvance').innerText = '0.00';
-                document.getElementById('custAddress').innerHTML = '';
-            }
-        }
-
-        // Run immediately when page loads
-        setDefaultCustomer();
-
-        // Also run after a slight delay to ensure all elements are loaded
-        setTimeout(setDefaultCustomer, 100);
-
-        // Also run when page is restored from cache (back/forward buttons)
-        window.addEventListener('pageshow', function() {
-            setDefaultCustomer();
-        });
-
-        // Run when DOM is fully loaded
-        document.addEventListener('DOMContentLoaded', function() {
-            setDefaultCustomer();
-        });
-
-        // =============================================
-        // CUSTOMER SELECTION FUNCTIONS
-        // =============================================
-        function loadCustomerData(select) {
-            var option = select.options[select.selectedIndex];
-            if(option.value) {
-                document.getElementById('customer_name').value = option.dataset.name || '';
-                document.getElementById('customer_phone').value = option.dataset.phone || '';
-                document.getElementById('custBalance').innerText = parseFloat(option.dataset.balance || 0).toFixed(2);
-                document.getElementById('custAdvance').innerText = parseFloat(option.dataset.advance || 0).toFixed(2);
-                document.getElementById('custAddress').innerHTML = option.dataset.address ? '| <i class="fas fa-map-marker-alt"></i> ' + option.dataset.address : '';
-                document.getElementById('customerInfo').style.display = 'block';
-            } else {
-                document.getElementById('customer_name').value = '';
-                document.getElementById('customer_phone').value = '';
-                document.getElementById('customerInfo').style.display = 'none';
-            }
-        }
-        
-        // Auto-fill customer name when typing
-        document.addEventListener('DOMContentLoaded', function() {
+    // =============================================
+    // FIX: Ensure Walk-in Customer is selected by default
+    // =============================================
+    function setDefaultCustomer() {
+        var customerSelect = document.getElementById('customer_id');
+        if(customerSelect) {
+            // Reset to Walk-in Customer (first option with value="")
+            customerSelect.value = '';
+            
+            // Clear all fields
             var nameField = document.getElementById('customer_name');
-            if(nameField) {
-                nameField.addEventListener('input', function() {
-                    if(this.value.trim()) {
-                        document.getElementById('customer_id').value = '';
-                        document.getElementById('customerInfo').style.display = 'none';
-                    }
-                });
+            var phoneField = document.getElementById('customer_phone');
+            var infoDiv = document.getElementById('customerInfo');
+            var balanceEl = document.getElementById('custBalance');
+            var advanceEl = document.getElementById('custAdvance');
+            var addressEl = document.getElementById('custAddress');
+            
+            if(nameField) nameField.value = '';
+            if(phoneField) phoneField.value = '';
+            if(infoDiv) infoDiv.style.display = 'none';
+            if(balanceEl) balanceEl.innerText = '0.00';
+            if(advanceEl) advanceEl.innerText = '0.00';
+            if(addressEl) addressEl.innerHTML = '';
+        }
+    }
+
+    // Run immediately
+    setDefaultCustomer();
+
+    // Run on DOM ready
+    document.addEventListener('DOMContentLoaded', setDefaultCustomer);
+
+    // Run on page show (back/forward)
+    window.addEventListener('pageshow', setDefaultCustomer);
+
+    // Run multiple times to override browser autofill
+    setTimeout(setDefaultCustomer, 100);
+    setTimeout(setDefaultCustomer, 300);
+    setTimeout(setDefaultCustomer, 500);
+    setTimeout(setDefaultCustomer, 800);
+
+    // =============================================
+    // CUSTOMER SELECTION FUNCTIONS
+    // =============================================
+    function loadCustomerData(select) {
+        var option = select.options[select.selectedIndex];
+        if(option && option.value) {
+            document.getElementById('customer_name').value = option.dataset.name || '';
+            document.getElementById('customer_phone').value = option.dataset.phone || '';
+            document.getElementById('custBalance').innerText = parseFloat(option.dataset.balance || 0).toFixed(2);
+            document.getElementById('custAdvance').innerText = parseFloat(option.dataset.advance || 0).toFixed(2);
+            document.getElementById('custAddress').innerHTML = option.dataset.address ? '| <i class="fas fa-map-marker-alt"></i> ' + option.dataset.address : '';
+            document.getElementById('customerInfo').style.display = 'block';
+        } else {
+            // Walk-in Customer selected - clear fields
+            document.getElementById('customer_name').value = '';
+            document.getElementById('customer_phone').value = '';
+            document.getElementById('customerInfo').style.display = 'none';
+            document.getElementById('custBalance').innerText = '0.00';
+            document.getElementById('custAdvance').innerText = '0.00';
+            document.getElementById('custAddress').innerHTML = '';
+        }
+    }
+
+    // Auto-fill customer name when typing
+    document.addEventListener('DOMContentLoaded', function() {
+        var nameField = document.getElementById('customer_name');
+        if(nameField) {
+            nameField.addEventListener('input', function() {
+                if(this.value.trim()) {
+                    document.getElementById('customer_id').value = '';
+                    document.getElementById('customerInfo').style.display = 'none';
+                }
+            });
+        }
+    });
+
+        // =============================================
+        // NEW CUSTOMER FUNCTIONS
+        // =============================================
+        function openNewCustomerModal() {
+            document.getElementById('new_customer_name').value = '';
+            document.getElementById('new_customer_phone').value = '';
+            document.getElementById('new_customer_email').value = '';
+            document.getElementById('new_customer_address').value = '';
+            document.getElementById('new_customer_credit_limit').value = '50000';
+            new bootstrap.Modal(document.getElementById('newCustomerModal')).show();
+        }
+
+        function saveNewCustomer() {
+            var name = document.getElementById('new_customer_name').value.trim();
+            var phone = document.getElementById('new_customer_phone').value.trim();
+            var email = document.getElementById('new_customer_email').value.trim();
+            var address = document.getElementById('new_customer_address').value.trim();
+            var creditLimit = parseFloat(document.getElementById('new_customer_credit_limit').value) || 50000;
+
+            if(!name) {
+                alert('Please enter customer name!');
+                return;
             }
-        });
+
+            // Check if customer already exists in dropdown
+            var existingCustomer = document.querySelector('#customer_id option[data-name="' + name + '"]');
+            if(existingCustomer) {
+                alert('Customer "' + name + '" already exists! Please select from the list.');
+                // Close modal
+                var modalEl = document.getElementById('newCustomerModal');
+                var modal = bootstrap.Modal.getInstance(modalEl);
+                if(modal) {
+                    modal.hide();
+                }
+                document.getElementById('customer_id').value = existingCustomer.value;
+                loadCustomerData(document.getElementById('customer_id'));
+                return;
+            }
+
+            // Show loading
+            var saveBtn = document.querySelector('#newCustomerModal .btn-success');
+            var originalText = saveBtn.innerHTML;
+            saveBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Saving...';
+            saveBtn.disabled = true;
+
+            // Prepare data
+            var formData = new FormData();
+            formData.append('customer_name', name);
+            formData.append('phone', phone);
+            formData.append('email', email);
+            formData.append('address', address);
+            formData.append('credit_limit', creditLimit);
+
+            // AJAX call to save customer
+            $.ajax({
+                url: 'ajax/save_customer.php',
+                type: 'POST',
+                data: formData,
+                processData: false,
+                contentType: false,
+                dataType: 'json',
+                success: function(result) {
+                    saveBtn.innerHTML = originalText;
+                    saveBtn.disabled = false;
+                    
+                    console.log('Success response:', result);
+                    
+                    if(result.success) {
+                        // Add new customer to dropdown
+                        var select = document.getElementById('customer_id');
+                        var option = document.createElement('option');
+                        option.value = result.customer_id;
+                        option.dataset.name = name;
+                        option.dataset.phone = phone;
+                        option.dataset.address = address;
+                        option.dataset.balance = '0';
+                        option.dataset.advance = '0';
+                        option.text = name + ' (' + (result.customer_code || 'New') + ') - Settled';
+                        select.appendChild(option);
+                        select.value = result.customer_id;
+                        loadCustomerData(select);
+                        
+                        // Close modal
+                        var modalEl = document.getElementById('newCustomerModal');
+                        var modal = bootstrap.Modal.getInstance(modalEl);
+                        if(modal) {
+                            modal.hide();
+                        }
+                        
+                        // Show success
+                        alert('✅ Customer "' + name + '" added successfully!');
+                    } else {
+                        if(result.customer_id) {
+                            // Customer already exists, select it
+                            var select = document.getElementById('customer_id');
+                            select.value = result.customer_id;
+                            loadCustomerData(select);
+                            alert('Customer "' + name + '" already exists! Selected from list.');
+                            var modalEl = document.getElementById('newCustomerModal');
+                            var modal = bootstrap.Modal.getInstance(modalEl);
+                            if(modal) {
+                                modal.hide();
+                            }
+                        } else {
+                            alert('Error: ' + result.message);
+                        }
+                    }
+                },
+                error: function(xhr, status, error) {
+                    saveBtn.innerHTML = originalText;
+                    saveBtn.disabled = false;
+                    
+                    console.log('AJAX Error Details:');
+                    console.log('Status:', status);
+                    console.log('Error:', error);
+                    console.log('Response Text:', xhr.responseText);
+                    console.log('Status Code:', xhr.status);
+                    
+                    // Try to parse error response
+                    try {
+                        var response = JSON.parse(xhr.responseText);
+                        alert('Error: ' + (response.message || 'Server error occurred'));
+                    } catch(e) {
+                        // If response is not JSON, show raw response
+                        if(xhr.responseText) {
+                            alert('Server Error:\n' + xhr.responseText);
+                        } else {
+                            alert('Error saving customer. Please check the server logs.\n\nStatus: ' + xhr.status + ' ' + status);
+                        }
+                    }
+                }
+            });
+        }
 
         // =============================================
         // PAYMENT METHOD FUNCTIONS
@@ -1071,6 +1274,38 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
             } else {
                 document.getElementById('transaction_id').placeholder = 'Enter transaction ID';
             }
+        }
+
+        function toggleSaleType(select) {
+            const paymentSection = document.getElementById('payment_section');
+            const cashFields = document.getElementById('cash_fields');
+            const customerSelect = document.getElementById('customer_id');
+            const customerName = document.getElementById('customer_name');
+            
+            if(select.value === 'credit') {
+                paymentSection.style.display = 'none';
+                cashFields.style.display = 'none';
+                document.getElementById('received').value = 0;
+                document.getElementById('payment_method').value = 'credit';
+                
+                // For credit sales, customer is required
+                if(!customerSelect.value && !customerName.value.trim()) {
+                    customerName.focus();
+                }
+            } else {
+                paymentSection.style.display = 'block';
+                cashFields.style.display = 'block';
+                document.getElementById('received').value = 0;
+                document.getElementById('payment_method').value = 'cash';
+                document.getElementById('card_details').classList.remove('show');
+                document.querySelectorAll('.payment-method-btn').forEach(btn => {
+                    btn.classList.remove('active');
+                    if(btn.dataset.method === 'cash') {
+                        btn.classList.add('active');
+                    }
+                });
+            }
+            calculateChange();
         }
 
         // =============================================
@@ -1173,36 +1408,6 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
             toggleSaleType(this);
         });
 
-        function toggleSaleType(select) {
-            const paymentSection = document.getElementById('payment_section');
-            const customerFields = document.getElementById('customer_fields');
-            const cashFields = document.getElementById('cash_fields');
-            
-            if(select.value === 'credit') {
-                paymentSection.style.display = 'none';
-                customerFields.style.display = 'block';
-                cashFields.style.display = 'none';
-                document.getElementById('customer_name_credit').setAttribute('required', 'required');
-                document.getElementById('received').value = 0;
-                document.getElementById('payment_method').value = 'credit';
-            } else {
-                paymentSection.style.display = 'block';
-                customerFields.style.display = 'none';
-                cashFields.style.display = 'block';
-                document.getElementById('customer_name_credit').removeAttribute('required');
-                document.getElementById('received').value = 0;
-                document.getElementById('payment_method').value = 'cash';
-                document.getElementById('card_details').classList.remove('show');
-                document.querySelectorAll('.payment-method-btn').forEach(btn => {
-                    btn.classList.remove('active');
-                    if(btn.dataset.method === 'cash') {
-                        btn.classList.add('active');
-                    }
-                });
-            }
-            calculateChange();
-        }
-
         // =============================================
         // Calculate functions
         // =============================================
@@ -1283,7 +1488,7 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
             
             let saleType = document.getElementById('sale_type').value;
             if(saleType == 'credit') {
-                let customerName = document.getElementById('customer_name_credit').value.trim();
+                let customerName = document.getElementById('customer_name').value.trim();
                 if(!customerName) {
                     e.preventDefault();
                     alert('❌ Please enter customer name for credit sale');
@@ -1319,7 +1524,7 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
             confirmMsg += `📌 Type: ${document.querySelector('#sale_type option:checked').text}\n`;
             confirmMsg += `💳 Payment: ${paymentLabel}\n`;
             if(saleType == 'credit') {
-                confirmMsg += `👤 Customer: ${document.getElementById('customer_name_credit').value.trim()}\n`;
+                confirmMsg += `👤 Customer: ${document.getElementById('customer_name').value.trim()}\n`;
             }
             let vehicle = document.getElementById('vehicle_number').value.trim();
             if(vehicle) {
