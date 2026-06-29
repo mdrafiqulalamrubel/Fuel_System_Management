@@ -249,13 +249,216 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
         .comparison-down { color: #dc3545; }
         .comparison-same { color: #6c757d; }
         
-        @media print {
-            .sidebar, .no-print, .btn, .dataTables_length, .dataTables_filter, 
-            .dataTables_paginate, .nav-tabs-custom, form { display: none !important; }
-            .main-content { margin: 0 !important; padding: 10px !important; }
-            .print-header { display: block !important; text-align: center; margin-bottom: 20px; }
-        }
+        /* ============================================= */
+        /* PRINT STYLES - PLAIN PAPER, LANDSCAPE */
+        /* ============================================= */
         .print-header { display: none; }
+        
+        @media print {
+            /* Hide non-print elements */
+            .no-print, .sidebar, .btn, .stats-card, .card-header .btn,
+            .dataTables_length, .dataTables_filter, .dataTables_paginate,
+            .dataTables_info, form, .info-box, .card-body .alert,
+            .nav-tabs, .nav-tabs-custom {
+                display: none !important;
+            }
+            
+            /* Show print header */
+            .print-header {
+                display: block !important;
+                text-align: center;
+                margin-bottom: 15px;
+                border-bottom: 2px solid #000;
+                padding-bottom: 10px;
+            }
+            
+            .print-header h2 {
+                font-size: 18px;
+                font-weight: bold;
+                margin-bottom: 2px;
+                color: #000 !important;
+            }
+            
+            .print-header h4 {
+                font-size: 14px;
+                margin-bottom: 2px;
+                color: #000 !important;
+            }
+            
+            .print-header p {
+                font-size: 11px;
+                margin-bottom: 2px;
+                color: #000 !important;
+            }
+            
+            .print-header .print-date {
+                font-size: 10px;
+                color: #000 !important;
+            }
+            
+            /* Remove all backgrounds */
+            .bg-primary, .bg-success, .bg-info, .bg-warning, .bg-danger,
+            .bg-secondary, .bg-light, .bg-white, .card-header, .table-dark,
+            .table-info, .table-secondary, .stats-card, .card, .badge, .alert {
+                background: #fff !important;
+                color: #000 !important;
+                border-color: #000 !important;
+            }
+            
+            .text-white, .text-white-50 { color: #000 !important; }
+            .text-success, .text-danger, .text-warning, .text-info, .text-primary {
+                color: #000 !important;
+            }
+            
+            .main-content {
+                margin: 0 !important;
+                padding: 5px !important;
+                width: 100% !important;
+                max-width: 100% !important;
+            }
+            
+            .container-fluid {
+                padding: 0 !important;
+                max-width: 100% !important;
+            }
+            
+            .card {
+                border: 1px solid #000 !important;
+                margin-bottom: 8px !important;
+                border-radius: 0 !important;
+                box-shadow: none !important;
+            }
+            
+            .card-header {
+                border-bottom: 1px solid #000 !important;
+                padding: 5px 8px !important;
+                font-weight: bold;
+                background: #fff !important;
+                color: #000 !important;
+            }
+            
+            .card-header h5, .card-header h6 {
+                font-size: 12px !important;
+                margin: 0 !important;
+                color: #000 !important;
+            }
+            
+            .card-body {
+                padding: 5px 8px !important;
+            }
+            
+            .table {
+                border-collapse: collapse !important;
+                width: 100% !important;
+                font-size: 12px !important;
+                margin: 0 !important;
+            }
+            
+            .table th, .table td {
+                border: 1px solid #000 !important;
+                padding: 4px 6px !important;
+                background: #fff !important;
+                color: #000 !important;
+                font-size: 12px !important;
+            }
+            
+            .table th {
+                background: #f8f9fa !important;
+                font-weight: bold !important;
+                border-bottom: 2px solid #000 !important;
+                font-size: 12px !important;
+            }
+            
+            .table thead th {
+                background: #f8f9fa !important;
+                border-bottom: 2px solid #000 !important;
+                font-size: 12px !important;
+            }
+            
+            .table tfoot th, .table tfoot td {
+                background: #f8f9fa !important;
+                border-top: 2px solid #000 !important;
+                font-weight: bold !important;
+                font-size: 12px !important;
+            }
+            
+            .table-responsive {
+                overflow: visible !important;
+            }
+            
+            .badge {
+                border: 1px solid #000 !important;
+                background: #fff !important;
+                color: #000 !important;
+                padding: 1px 6px !important;
+                font-size: 11px !important;
+                border-radius: 2px !important;
+            }
+            
+            .stats-card {
+                background: #fff !important;
+                border: 1px solid #000 !important;
+                color: #000 !important;
+            }
+            
+            .stats-card i {
+                opacity: 0.5 !important;
+            }
+            
+            .footer-note {
+                border-top: 1px solid #000 !important;
+                margin-top: 8px !important;
+                padding-top: 4px !important;
+                font-size: 10px !important;
+                text-align: center !important;
+                color: #000 !important;
+                display: block !important;
+            }
+            
+            .meter-box .number {
+                font-size: 12px !important;
+            }
+            
+            .comparison-up, .comparison-down, .comparison-same {
+                color: #000 !important;
+            }
+            
+            @page {
+                size: landscape;
+                margin: 6mm 4mm;
+            }
+            
+            ::-webkit-scrollbar { display: none; }
+            
+            .dataTables_wrapper .dataTables_length,
+            .dataTables_wrapper .dataTables_filter,
+            .dataTables_wrapper .dataTables_info,
+            .dataTables_wrapper .dataTables_paginate {
+                display: none !important;
+            }
+            
+            .dataTables_scrollBody {
+                overflow: visible !important;
+                height: auto !important;
+            }
+            
+            .dataTables_scroll {
+                overflow: visible !important;
+            }
+            
+            table.dataTable {
+                width: 100% !important;
+            }
+            
+            /* Force table rows to show */
+            table.dataTable tbody tr {
+                display: table-row !important;
+            }
+            
+            table.dataTable tbody td {
+                display: table-cell !important;
+            }
+        }
     </style>
 </head>
 <body>

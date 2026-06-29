@@ -81,6 +81,192 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
             .print-header { display: block !important; text-align: center; margin-bottom: 20px; }
         }
         .print-header { display: none; }
+
+        /* ============================================= */
+        /* PRINT STYLES - PLAIN PAPER, LANDSCAPE, 12px */
+        /* ============================================= */
+        @media print {
+            .sidebar, .no-print, .stats-card, .btn, .card-header .btn, 
+            form, .dataTables_length, .dataTables_filter, .dataTables_paginate,
+            .dataTables_info {
+                display: none !important;
+            }
+            
+            .print-header {
+                display: block !important;
+                text-align: center;
+                margin-bottom: 15px;
+                border-bottom: 2px solid #000;
+                padding-bottom: 10px;
+            }
+            
+            .print-header h2 {
+                font-size: 18px;
+                font-weight: bold;
+                margin-bottom: 2px;
+                color: #000 !important;
+            }
+            
+            .print-header h4 {
+                font-size: 14px;
+                margin-bottom: 2px;
+                color: #000 !important;
+            }
+            
+            .print-header p {
+                font-size: 11px;
+                margin-bottom: 2px;
+                color: #000 !important;
+            }
+            
+            .print-header .print-date {
+                font-size: 10px;
+                color: #000 !important;
+            }
+            
+            .main-content {
+                margin: 0 !important;
+                padding: 5px !important;
+                width: 100% !important;
+                max-width: 100% !important;
+            }
+            
+            .container-fluid {
+                padding: 0 !important;
+                max-width: 100% !important;
+            }
+            
+            .card {
+                border: 1px solid #000 !important;
+                margin-bottom: 8px !important;
+                border-radius: 0 !important;
+                box-shadow: none !important;
+            }
+            
+            .card-header {
+                border-bottom: 1px solid #000 !important;
+                padding: 5px 8px !important;
+                font-weight: bold;
+                background: #fff !important;
+                color: #000 !important;
+            }
+            
+            .card-header h4, .card-header h5 {
+                font-size: 14px !important;
+                margin: 0 !important;
+                color: #000 !important;
+            }
+            
+            .card-body {
+                padding: 5px 8px !important;
+            }
+            
+            .bg-primary, .bg-success, .bg-info, .bg-warning, .bg-danger,
+            .bg-secondary, .bg-light, .bg-white, .table-dark {
+                background: #fff !important;
+                color: #000 !important;
+                border-color: #000 !important;
+            }
+            
+            .text-white, .text-white-50 { color: #000 !important; }
+            .text-success, .text-danger, .text-warning, .text-info, .text-primary {
+                color: #000 !important;
+            }
+            
+            .table {
+                border-collapse: collapse !important;
+                width: 100% !important;
+                font-size: 12px !important;
+                margin: 0 !important;
+            }
+            
+            .table th, .table td {
+                border: 1px solid #000 !important;
+                padding: 4px 6px !important;
+                background: #fff !important;
+                color: #000 !important;
+                font-size: 12px !important;
+            }
+            
+            .table th {
+                background: #f8f9fa !important;
+                font-weight: bold !important;
+                border-bottom: 2px solid #000 !important;
+            }
+            
+            .table thead th {
+                background: #f8f9fa !important;
+                border-bottom: 2px solid #000 !important;
+                font-size: 12px !important;
+            }
+            
+            .table tfoot th, .table tfoot td {
+                background: #f8f9fa !important;
+                border-top: 2px solid #000 !important;
+                font-weight: bold !important;
+                font-size: 12px !important;
+            }
+            
+            .table-responsive {
+                overflow: visible !important;
+            }
+            
+            .alert {
+                border: 1px solid #000 !important;
+                background: #fff !important;
+                color: #000 !important;
+            }
+            
+            .clickable-row td:first-child {
+                color: #000 !important;
+                text-decoration: none !important;
+            }
+            
+            .badge {
+                border: 1px solid #000 !important;
+                background: #fff !important;
+                color: #000 !important;
+                padding: 1px 6px !important;
+                font-size: 11px !important;
+                border-radius: 2px !important;
+            }
+            
+            .stats-card {
+                background: #fff !important;
+                border: 1px solid #000 !important;
+                color: #000 !important;
+            }
+            
+            .stats-card i {
+                opacity: 0.5 !important;
+            }
+            
+            .footer-note, .text-center small {
+                border-top: 1px solid #000 !important;
+                margin-top: 8px !important;
+                padding-top: 4px !important;
+                font-size: 10px !important;
+                text-align: center !important;
+                color: #000 !important;
+            }
+            
+            @page {
+                size: landscape;
+                margin: 6mm 4mm;
+            }
+            
+            ::-webkit-scrollbar { display: none; }
+            
+            .col-md-6, .col-md-3 {
+                flex: 0 0 100% !important;
+                max-width: 100% !important;
+                width: 100% !important;
+            }
+            
+            .row {
+                margin: 0 !important;
+            }
+        }
     </style>
 </head>
 <body>
