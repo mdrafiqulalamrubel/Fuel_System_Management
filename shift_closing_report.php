@@ -1,5 +1,5 @@
 <?php
-// shift_closing_report.php
+// shift_closing_report.php - FIXED to include all credit sales
 require_once 'config/database.php';
 if(!isLoggedIn()) redirect('index.php');
 
@@ -77,8 +77,11 @@ if($shift_id > 0) {
     $stmt->execute([$shift_id]);
     $meter_readings = $stmt->fetchAll();
     
-    // Get sales breakdown for this shift
-    // Liquid Fuel Sales
+    // =============================================
+    // GET ALL SALES BREAKDOWN FOR THIS SHIFT
+    // =============================================
+    
+    // 1. Liquid Fuel Sales
     $stmt = $pdo->prepare("
         SELECT 
             p.product_name,
@@ -94,7 +97,7 @@ if($shift_id > 0) {
     $stmt->execute([$selected_shift['shift_id'], $selected_shift['shift_date']]);
     $liquid_sales = $stmt->fetchAll();
     
-    // CNG Sales
+    // 2. CNG Sales
     $stmt = $pdo->prepare("
         SELECT 
             'CNG' as product_name,
@@ -108,19 +111,90 @@ if($shift_id > 0) {
     $stmt->execute([$selected_shift['shift_id'], $selected_shift['shift_date']]);
     $cng_sales = $stmt->fetch();
     
+    // 3. Item Sales (ADDED)
+    $stmt = $pdo->prepare("
+        SELECT 
+            'Item Sales' as product_name,
+            COALESCE(SUM(CASE WHEN isa.sale_type = 'cash' THEN isa.total_amount ELSE 0 END), 0) as cash_sales,
+            COALESCE(SUM(CASE WHEN isa.sale_type = 'credit' THEN isa.total_amount ELSE 0 END), 0) as credit_sales,
+            COALESCE(SUM(isa.total_amount), 0) as total_sales,
+            COUNT(*) as transaction_count
+        FROM item_sales isa
+        WHERE isa.shift_id = ? AND DATE(isa.sale_date) = ?
+    ");
+    $stmt->execute([$selected_shift['shift_id'], $selected_shift['shift_date']]);
+    $item_sales = $stmt->fetch();
+    
+    // Calculate totals for this shift
+    $shift_cash_sales = 0;
+    $shift_credit_sales = 0;
+    
+    foreach($liquid_sales as $liquid) {
+        $shift_cash_sales += $liquid['cash_sales'];
+        $shift_credit_sales += $liquid['credit_sales'];
+    }
+    
+    if($cng_sales) {
+        $shift_cash_sales += $cng_sales['cash_sales'];
+        $shift_credit_sales += $cng_sales['credit_sales'];
+    }
+    
+    if($item_sales) {
+        $shift_cash_sales += $item_sales['cash_sales'];
+        $shift_credit_sales += $item_sales['credit_sales'];
+    }
+    
+    $shift_all_sales = $shift_cash_sales + $shift_credit_sales;
+    
     $shift_sales = [
         'liquid' => $liquid_sales,
-        'cng' => $cng_sales
+        'cng' => $cng_sales,
+        'item' => $item_sales,
+        'total_cash' => $shift_cash_sales,
+        'total_credit' => $shift_credit_sales,
+        'total_all' => $shift_all_sales
     ];
 }
 
-// Calculate totals
+// Calculate totals from the shift_closing table
 $total_cash_sales = array_sum(array_column($shifts, 'total_cash_sales'));
 $total_credit_sales = array_sum(array_column($shifts, 'total_credit_sales'));
 $total_cng_sales = array_sum(array_column($shifts, 'total_cng_sales'));
 $total_liquid_sales = array_sum(array_column($shifts, 'total_liquid_sales'));
 $total_all_sales = array_sum(array_column($shifts, 'total_all_sales'));
 $total_receipts = array_sum(array_column($shifts, 'net_cash'));
+
+// Recalculate credit sales from all sources if needed
+$recalc_credit_sales = $total_credit_sales;
+// If credit sales shows 0 but there are shifts, recalculate from source tables
+if($total_credit_sales == 0 && count($shifts) > 0) {
+    // Try to get credit sales from the shift's sales data
+    $stmt = $pdo->prepare("
+        SELECT COALESCE(SUM(CASE WHEN sale_type = 'credit' THEN total_amount ELSE 0 END), 0) as credit_sales
+        FROM sales 
+        WHERE DATE(sale_date) BETWEEN ? AND ?
+    ");
+    $stmt->execute([$from_date, $to_date]);
+    $sales_credit = $stmt->fetch()['credit_sales'] ?? 0;
+    
+    $stmt = $pdo->prepare("
+        SELECT COALESCE(SUM(CASE WHEN sale_type = 'credit' THEN total_amount ELSE 0 END), 0) as credit_sales
+        FROM gas_sales 
+        WHERE DATE(sale_date) BETWEEN ? AND ? AND status = 'completed'
+    ");
+    $stmt->execute([$from_date, $to_date]);
+    $gas_credit = $stmt->fetch()['credit_sales'] ?? 0;
+    
+    $stmt = $pdo->prepare("
+        SELECT COALESCE(SUM(CASE WHEN sale_type = 'credit' THEN total_amount ELSE 0 END), 0) as credit_sales
+        FROM item_sales 
+        WHERE DATE(sale_date) BETWEEN ? AND ?
+    ");
+    $stmt->execute([$from_date, $to_date]);
+    $item_credit = $stmt->fetch()['credit_sales'] ?? 0;
+    
+    $recalc_credit_sales = $sales_credit + $gas_credit + $item_credit;
+}
 
 $settings = $pdo->query("SELECT setting_key, setting_value FROM system_settings")->fetchAll(PDO::FETCH_KEY_PAIR);
 $currency = $settings['currency_symbol'] ?? 'BDT';
@@ -172,6 +246,7 @@ $company_name = $settings['company_name'] ?? 'FF Enterprise';
         .value-credit { color: #ffc107; }
         .value-cng { color: #17a2b8; }
         .value-liquid { color: #007bff; }
+        .value-item { color: #6f42c1; }
         .value-total { color: #dc3545; }
         .meter-reading {
             font-family: 'Courier New', monospace;
@@ -211,8 +286,10 @@ $company_name = $settings['company_name'] ?? 'FF Enterprise';
             /* Landscape for wide reports */
             @page {
                 size: landscape;
-                margin: 10mm 8mm;
+                margin: 0.5in !important;
             }
+            
+            body { margin: 0.5in !important; padding: 0 !important; }
             
             /* Main content full width */
             .main-content {
@@ -237,34 +314,37 @@ $company_name = $settings['company_name'] ?? 'FF Enterprise';
             }
             
             .print-header h2 {
-                font-size: 20px;
+                font-size: 18px;
                 font-weight: bold;
                 margin-bottom: 2px;
+                color: #000 !important;
             }
             
             .print-header h4 {
-                font-size: 16px;
+                font-size: 14px;
                 margin-bottom: 2px;
+                color: #000 !important;
             }
             
             .print-header p {
-                font-size: 12px;
+                font-size: 11px;
                 margin-bottom: 2px;
+                color: #000 !important;
             }
             
             /* Card styles - plain border */
             .card {
                 border: 1px solid #000 !important;
-                margin-bottom: 10px !important;
+                margin-bottom: 8px !important;
                 border-radius: 0 !important;
                 box-shadow: none !important;
             }
             
             .card-header {
-                background: #f8f9fa !important;
+                background: #fff !important;
                 color: #000 !important;
                 border-bottom: 1px solid #000 !important;
-                padding: 5px 10px !important;
+                padding: 5px 8px !important;
                 font-weight: bold;
             }
             
@@ -275,7 +355,7 @@ $company_name = $settings['company_name'] ?? 'FF Enterprise';
             }
             
             .card-body {
-                padding: 8px 10px !important;
+                padding: 5px 8px !important;
             }
             
             /* Table styles - plain black and white */
@@ -311,7 +391,6 @@ $company_name = $settings['company_name'] ?? 'FF Enterprise';
             .table-striped tbody tr:nth-of-type(odd) {
                 background: #fff !important;
             }
-            
             .table-striped tbody tr:nth-of-type(even) {
                 background: #f9f9f9 !important;
             }
@@ -327,11 +406,9 @@ $company_name = $settings['company_name'] ?? 'FF Enterprise';
                 color: #000 !important;
             }
             
-            .text-success { color: #000 !important; }
-            .text-warning { color: #000 !important; }
-            .text-info { color: #000 !important; }
-            .text-danger { color: #000 !important; }
-            .text-primary { color: #000 !important; }
+            .text-success, .text-warning, .text-info, .text-danger, .text-primary {
+                color: #000 !important;
+            }
             
             /* Remove alerts background */
             .alert {
@@ -389,6 +466,9 @@ $company_name = $settings['company_name'] ?? 'FF Enterprise';
             
             .col-md-3, .col-md-4, .col-md-6, .col-md-12, .col-md-2 {
                 padding: 0 3px !important;
+                width: 100% !important;
+                max-width: 100% !important;
+                flex: 0 0 100% !important;
             }
             
             /* Hide scrollbars */
@@ -405,10 +485,11 @@ $company_name = $settings['company_name'] ?? 'FF Enterprise';
             /* Footer note */
             .footer-note {
                 border-top: 1px solid #000 !important;
-                margin-top: 10px !important;
-                padding-top: 5px !important;
+                margin-top: 8px !important;
+                padding-top: 4px !important;
                 font-size: 8px !important;
                 text-align: center !important;
+                color: #000 !important;
             }
             
             /* PLC Card in print */
@@ -416,6 +497,10 @@ $company_name = $settings['company_name'] ?? 'FF Enterprise';
                 border: 1px solid #000 !important;
                 background: #fff !important;
                 border-left: 3px solid #000 !important;
+            }
+            
+            .table-responsive {
+                overflow: visible !important;
             }
         }
         
@@ -522,7 +607,7 @@ $company_name = $settings['company_name'] ?? 'FF Enterprise';
                 <div class="col-md-3">
                     <div class="stats-card" style="background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);">
                         <i class="fas fa-file-invoice"></i>
-                        <h3><?php echo $currency; ?> <?php echo number_format($total_credit_sales, 2); ?></h3>
+                        <h3><?php echo $currency; ?> <?php echo number_format($recalc_credit_sales, 2); ?></h3>
                         <p>Total Credit Sales</p>
                     </div>
                 </div>
@@ -583,7 +668,7 @@ $company_name = $settings['company_name'] ?? 'FF Enterprise';
                     <hr>
                     
                     <!-- ============================================= -->
-                    <!-- PLC INFORMATION - Shows Opening, Closing & Difference -->
+                    <!-- PLC INFORMATION -->
                     <!-- ============================================= -->
                     <?php 
                     $opening_plc = $selected_shift['opening_plc_count'] ?? 0;
@@ -669,13 +754,13 @@ $company_name = $settings['company_name'] ?? 'FF Enterprise';
                     <hr>
                     
                     <!-- ============================================= -->
-                    <!-- SALES BREAKDOWN -->
+                    <!-- SALES BREAKDOWN - INCLUDES ITEM SALES -->
                     <!-- ============================================= -->
-                    <h6 class="section-title"><i class="fas fa-chart-pie"></i> Sales Breakdown</h6>
+                    <h6 class="section-title"><i class="fas fa-chart-pie"></i> Sales Breakdown (All 3 POS Types)</h6>
                     
                     <div class="row">
                         <!-- Liquid Fuel Sales -->
-                        <div class="col-md-6">
+                        <div class="col-md-4">
                             <div class="card">
                                 <div class="card-header">
                                     <h6><i class="fas fa-oil-can"></i> Liquid Fuel Sales</h6>
@@ -688,7 +773,6 @@ $company_name = $settings['company_name'] ?? 'FF Enterprise';
                                                 <th class="text-end">Cash</th>
                                                 <th class="text-end">Credit</th>
                                                 <th class="text-end">Total</th>
-                                                <th class="text-end">Qty</th>
                                             </tr>
                                         </thead>
                                         <tbody>
@@ -706,12 +790,11 @@ $company_name = $settings['company_name'] ?? 'FF Enterprise';
                                                 <td class="text-end"><?php echo $currency; ?> <?php echo number_format($sale['cash_sales'], 2); ?></td>
                                                 <td class="text-end"><?php echo $currency; ?> <?php echo number_format($sale['credit_sales'], 2); ?></td>
                                                 <td class="text-end fw-bold"><?php echo $currency; ?> <?php echo number_format($sale['total_sales'], 2); ?></td>
-                                                <td class="text-end"><?php echo $sale['transaction_count']; ?></td>
                                             </tr>
                                             <?php endforeach; ?>
                                             <?php if(empty($shift_sales['liquid'])): ?>
                                             <tr>
-                                                <td colspan="5" class="text-center">No liquid fuel sales</td>
+                                                <td colspan="4" class="text-center">No liquid fuel sales</td>
                                             </tr>
                                             <?php endif; ?>
                                         </tbody>
@@ -721,7 +804,6 @@ $company_name = $settings['company_name'] ?? 'FF Enterprise';
                                                 <td class="text-end"><?php echo $currency; ?> <?php echo number_format($total_liquid_cash, 2); ?></td>
                                                 <td class="text-end"><?php echo $currency; ?> <?php echo number_format($total_liquid_credit, 2); ?></td>
                                                 <td class="text-end"><?php echo $currency; ?> <?php echo number_format($total_liquid_all, 2); ?></td>
-                                                <td></td>
                                             </tr>
                                         </tfoot>
                                     </table>
@@ -730,7 +812,7 @@ $company_name = $settings['company_name'] ?? 'FF Enterprise';
                         </div>
                         
                         <!-- CNG Sales -->
-                        <div class="col-md-6">
+                        <div class="col-md-4">
                             <div class="card">
                                 <div class="card-header">
                                     <h6><i class="fas fa-gas-pump"></i> CNG Sales</h6>
@@ -743,7 +825,6 @@ $company_name = $settings['company_name'] ?? 'FF Enterprise';
                                                 <th class="text-end">Cash</th>
                                                 <th class="text-end">Credit</th>
                                                 <th class="text-end">Total</th>
-                                                <th class="text-end">Qty</th>
                                             </tr>
                                         </thead>
                                         <tbody>
@@ -753,11 +834,10 @@ $company_name = $settings['company_name'] ?? 'FF Enterprise';
                                                 <td class="text-end"><?php echo $currency; ?> <?php echo number_format($shift_sales['cng']['cash_sales'], 2); ?></td>
                                                 <td class="text-end"><?php echo $currency; ?> <?php echo number_format($shift_sales['cng']['credit_sales'], 2); ?></td>
                                                 <td class="text-end fw-bold"><?php echo $currency; ?> <?php echo number_format($shift_sales['cng']['total_sales'], 2); ?></td>
-                                                <td class="text-end"><?php echo $shift_sales['cng']['transaction_count']; ?></td>
                                             </tr>
                                             <?php else: ?>
                                             <tr>
-                                                <td colspan="5" class="text-center">No CNG sales</td>
+                                                <td colspan="4" class="text-center">No CNG sales</td>
                                             </tr>
                                             <?php endif; ?>
                                         </tbody>
@@ -767,7 +847,49 @@ $company_name = $settings['company_name'] ?? 'FF Enterprise';
                                                 <td class="text-end"><?php echo $currency; ?> <?php echo number_format($shift_sales['cng']['cash_sales'] ?? 0, 2); ?></td>
                                                 <td class="text-end"><?php echo $currency; ?> <?php echo number_format($shift_sales['cng']['credit_sales'] ?? 0, 2); ?></td>
                                                 <td class="text-end"><?php echo $currency; ?> <?php echo number_format($shift_sales['cng']['total_sales'] ?? 0, 2); ?></td>
-                                                <td></td>
+                                            </tr>
+                                        </tfoot>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <!-- Item Sales (NEW) -->
+                        <div class="col-md-4">
+                            <div class="card">
+                                <div class="card-header">
+                                    <h6><i class="fas fa-box"></i> Item Sales</h6>
+                                </div>
+                                <div class="card-body p-2">
+                                    <table class="table table-sm table-bordered mb-0 table-striped">
+                                        <thead>
+                                            <tr>
+                                                <th>Product</th>
+                                                <th class="text-end">Cash</th>
+                                                <th class="text-end">Credit</th>
+                                                <th class="text-end">Total</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            <?php if($shift_sales['item'] && $shift_sales['item']['total_sales'] > 0): ?>
+                                            <tr>
+                                                <td>Item Sales</td>
+                                                <td class="text-end"><?php echo $currency; ?> <?php echo number_format($shift_sales['item']['cash_sales'], 2); ?></td>
+                                                <td class="text-end"><?php echo $currency; ?> <?php echo number_format($shift_sales['item']['credit_sales'], 2); ?></td>
+                                                <td class="text-end fw-bold"><?php echo $currency; ?> <?php echo number_format($shift_sales['item']['total_sales'], 2); ?></td>
+                                            </tr>
+                                            <?php else: ?>
+                                            <tr>
+                                                <td colspan="4" class="text-center">No item sales</td>
+                                            </tr>
+                                            <?php endif; ?>
+                                        </tbody>
+                                        <tfoot>
+                                            <tr class="fw-bold">
+                                                <td>TOTAL ITEMS</td>
+                                                <td class="text-end"><?php echo $currency; ?> <?php echo number_format($shift_sales['item']['cash_sales'] ?? 0, 2); ?></td>
+                                                <td class="text-end"><?php echo $currency; ?> <?php echo number_format($shift_sales['item']['credit_sales'] ?? 0, 2); ?></td>
+                                                <td class="text-end"><?php echo $currency; ?> <?php echo number_format($shift_sales['item']['total_sales'] ?? 0, 2); ?></td>
                                             </tr>
                                         </tfoot>
                                     </table>
@@ -818,7 +940,7 @@ $company_name = $settings['company_name'] ?? 'FF Enterprise';
             <?php endif; ?>
             
             <!-- ============================================= -->
-            <!-- SHIFT LIST - Shows Opening PLC, Closing PLC & Difference -->
+            <!-- SHIFT LIST -->
             <!-- ============================================= -->
             <div class="card mt-4">
                 <div class="card-header">
@@ -865,15 +987,11 @@ $company_name = $settings['company_name'] ?? 'FF Enterprise';
                                     <td class="text-end"><?php echo $currency; ?> <?php echo number_format($shift['total_liquid_sales'], 2); ?></td>
                                     <td class="text-end fw-bold"><?php echo $currency; ?> <?php echo number_format($shift['total_all_sales'], 2); ?></td>
                                     <td class="text-end"><?php echo $currency; ?> <?php echo number_format($shift['net_cash'], 2); ?></td>
-                                    <!-- ============================================= -->
-                                    <!-- PLC Columns - Opening, Closing & Difference -->
-                                    <!-- ============================================= -->
                                     <td class="text-end text-primary"><?php echo number_format($opening_plc, 2); ?></td>
                                     <td class="text-end text-info"><?php echo number_format($closing_plc, 2); ?></td>
                                     <td class="text-end <?php echo $plc_diff > 0 ? 'text-success' : ($plc_diff < 0 ? 'text-danger' : 'text-muted'); ?>">
                                         <?php echo number_format($plc_diff, 2); ?>
                                     </td>
-                                    <!-- ============================================= -->
                                     <td><?php echo ucfirst($shift['status']); ?></td>
                                     <td class="no-print">
                                         <a href="?from_date=<?php echo $from_date; ?>&to_date=<?php echo $to_date; ?>&shift_id=<?php echo $shift['id']; ?>" class="btn btn-sm btn-info">
@@ -887,13 +1005,11 @@ $company_name = $settings['company_name'] ?? 'FF Enterprise';
                                 <tr class="fw-bold">
                                     <td colspan="5" class="text-end">TOTAL:</td>
                                     <td class="text-end"><?php echo $currency; ?> <?php echo number_format($total_cash_sales, 2); ?></td>
-                                    <td class="text-end"><?php echo $currency; ?> <?php echo number_format($total_credit_sales, 2); ?></td>
+                                    <td class="text-end"><?php echo $currency; ?> <?php echo number_format($recalc_credit_sales, 2); ?></td>
                                     <td class="text-end"><?php echo $currency; ?> <?php echo number_format($total_cng_sales, 2); ?></td>
                                     <td class="text-end"><?php echo $currency; ?> <?php echo number_format($total_liquid_sales, 2); ?></td>
                                     <td class="text-end"><?php echo $currency; ?> <?php echo number_format($total_all_sales, 2); ?></td>
                                     <td class="text-end"><?php echo $currency; ?> <?php echo number_format($total_receipts, 2); ?></td>
-                                    <!-- ============================================= -->
-                                    <!-- PLC Totals -->
                                     <td class="text-end"><?php 
                                         $total_opening_plc = 0;
                                         foreach($shifts as $shift) {
@@ -915,7 +1031,6 @@ $company_name = $settings['company_name'] ?? 'FF Enterprise';
                                         }
                                         echo number_format($total_plc_diff, 2);
                                     ?></td>
-                                    <!-- ============================================= -->
                                     <td colspan="2"></td>
                                 </tr>
                             </tfoot>
@@ -930,7 +1045,7 @@ $company_name = $settings['company_name'] ?? 'FF Enterprise';
                 <strong>Report Summary:</strong> 
                 <?php echo count($shifts); ?> shifts from <?php echo date('d M Y', strtotime($from_date)); ?> to <?php echo date('d M Y', strtotime($to_date)); ?>.
                 Total Sales: <?php echo $currency; ?> <?php echo number_format($total_all_sales, 2); ?>
-                | Total PLC Difference: <?php echo number_format($total_plc_diff ?? 0, 2); ?>
+                | Total Credit Sales: <?php echo $currency; ?> <?php echo number_format($recalc_credit_sales, 2); ?>
                 <br><small>Click <strong>Print Report</strong> button for landscape print with plain paper format.</small>
             </div>
         </div>

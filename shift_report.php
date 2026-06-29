@@ -5,7 +5,62 @@ if(!isLoggedIn()) redirect('index.php');
 $from_date = isset($_GET['from_date']) ? $_GET['from_date'] : date('Y-m-01');
 $to_date = isset($_GET['to_date']) ? $_GET['to_date'] : date('Y-m-t');
 
-// Get shift closing data
+// =============================================
+// GET ALL SALES DATA DIRECTLY FROM TABLES
+// =============================================
+
+// 1. Liquid Fuel Sales (from sales table)
+$stmt = $pdo->prepare("
+    SELECT 
+        DATE(sale_date) as sale_date,
+        'Liquid Fuel' as product_type,
+        COALESCE(SUM(CASE WHEN sale_type = 'cash' THEN total_amount ELSE 0 END), 0) as cash_sales,
+        COALESCE(SUM(CASE WHEN sale_type = 'credit' THEN total_amount ELSE 0 END), 0) as credit_sales,
+        COALESCE(SUM(total_amount), 0) as total_sales
+    FROM sales 
+    WHERE DATE(sale_date) BETWEEN ? AND ?
+");
+$stmt->execute([$from_date, $to_date]);
+$liquid_sales = $stmt->fetch();
+
+// 2. CNG Sales (from gas_sales table)
+$stmt = $pdo->prepare("
+    SELECT 
+        DATE(sale_date) as sale_date,
+        'CNG' as product_type,
+        COALESCE(SUM(CASE WHEN sale_type = 'cash' THEN total_amount ELSE 0 END), 0) as cash_sales,
+        COALESCE(SUM(CASE WHEN sale_type = 'credit' THEN total_amount ELSE 0 END), 0) as credit_sales,
+        COALESCE(SUM(total_amount), 0) as total_sales
+    FROM gas_sales 
+    WHERE DATE(sale_date) BETWEEN ? AND ?
+    AND status = 'completed'
+");
+$stmt->execute([$from_date, $to_date]);
+$cng_sales = $stmt->fetch();
+
+// 3. Item Sales (from item_sales table)
+$stmt = $pdo->prepare("
+    SELECT 
+        DATE(sale_date) as sale_date,
+        'Item Sales' as product_type,
+        COALESCE(SUM(CASE WHEN sale_type = 'cash' THEN total_amount ELSE 0 END), 0) as cash_sales,
+        COALESCE(SUM(CASE WHEN sale_type = 'credit' THEN total_amount ELSE 0 END), 0) as credit_sales,
+        COALESCE(SUM(total_amount), 0) as total_sales
+    FROM item_sales 
+    WHERE DATE(sale_date) BETWEEN ? AND ?
+");
+$stmt->execute([$from_date, $to_date]);
+$item_sales = $stmt->fetch();
+
+// Calculate totals from all sources
+$total_cash_sales = ($liquid_sales['cash_sales'] ?? 0) + ($cng_sales['cash_sales'] ?? 0) + ($item_sales['cash_sales'] ?? 0);
+$total_credit_sales = ($liquid_sales['credit_sales'] ?? 0) + ($cng_sales['credit_sales'] ?? 0) + ($item_sales['credit_sales'] ?? 0);
+$total_liquid_sales = $liquid_sales['total_sales'] ?? 0;
+$total_cng_sales = $cng_sales['total_sales'] ?? 0;
+$total_item_sales = $item_sales['total_sales'] ?? 0;
+$total_all_sales = $total_cash_sales + $total_credit_sales;
+
+// Get shift closing data (for shift details)
 $stmt = $pdo->prepare("
     SELECT sc.*, sh.shift_name, u1.full_name as opened_by, u2.full_name as closed_by
     FROM shift_closing sc
@@ -17,14 +72,6 @@ $stmt = $pdo->prepare("
 ");
 $stmt->execute([$from_date, $to_date]);
 $shifts = $stmt->fetchAll();
-
-// Calculate totals
-$total_cash_sales = array_sum(array_column($shifts, 'total_cash_sales'));
-$total_credit_sales = array_sum(array_column($shifts, 'total_credit_sales'));
-$total_cng_sales = array_sum(array_column($shifts, 'total_cng_sales'));
-$total_liquid_sales = array_sum(array_column($shifts, 'total_liquid_sales'));
-$total_all_sales = array_sum(array_column($shifts, 'total_all_sales'));
-$total_receipts = array_sum(array_column($shifts, 'net_cash'));
 
 $settings = $pdo->query("SELECT setting_key, setting_value FROM system_settings")->fetchAll(PDO::FETCH_KEY_PAIR);
 $currency = $settings['currency_symbol'] ?? 'BDT';
@@ -49,12 +96,181 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
         }
         .stats-card:hover { transform: translateY(-5px); }
         .stats-card i { font-size: 40px; opacity: 0.5; float: right; }
+        
+        /* ============================================= */
+        /* PRINT STYLES - PLAIN PAPER, LANDSCAPE, 12px, 0.5in MARGIN, NO INNER BORDERS */
+        /* ============================================= */
         @media print {
-            .sidebar, .no-print, .btn, .dataTables_length, .dataTables_filter, .dataTables_paginate {
+            .sidebar, .no-print, .btn, .dataTables_length, .dataTables_filter, 
+            .dataTables_paginate, .dataTables_info, form, .card-header .btn,
+            .stats-card {
                 display: none !important;
             }
-            .main-content { margin: 0 !important; padding: 10px !important; }
-            .print-header { display: block !important; text-align: center; margin-bottom: 20px; }
+            
+            body {
+                margin: 0.5in !important;
+                padding: 0 !important;
+            }
+            
+            .main-content {
+                margin: 0 !important;
+                padding: 0 !important;
+                width: 100% !important;
+                max-width: 100% !important;
+            }
+            
+            .container-fluid {
+                padding: 0 !important;
+                max-width: 100% !important;
+            }
+            
+            .print-header {
+                display: block !important;
+                text-align: center;
+                margin-bottom: 15px;
+                border-bottom: 2px solid #000;
+                padding-bottom: 10px;
+            }
+            
+            .print-header h2 {
+                font-size: 18px;
+                font-weight: bold;
+                margin-bottom: 2px;
+                color: #000 !important;
+            }
+            
+            .print-header h4 {
+                font-size: 14px;
+                margin-bottom: 2px;
+                color: #000 !important;
+            }
+            
+            .print-header p {
+                font-size: 11px;
+                margin-bottom: 2px;
+                color: #000 !important;
+            }
+            
+            .card {
+                border: none !important;
+                margin-bottom: 8px !important;
+                border-radius: 0 !important;
+                box-shadow: none !important;
+            }
+            
+            .card-header {
+                border: none !important;
+                padding: 5px 8px !important;
+                font-weight: bold;
+                background: #fff !important;
+                color: #000 !important;
+                border-bottom: 2px solid #000 !important;
+            }
+            
+            .card-header h5 {
+                font-size: 14px !important;
+                margin: 0 !important;
+                color: #000 !important;
+            }
+            
+            .card-body {
+                padding: 5px 0 !important;
+            }
+            
+            .table {
+                border-collapse: collapse !important;
+                width: 100% !important;
+                font-size: 12px !important;
+                margin: 0 !important;
+                border: 2px solid #000 !important;
+            }
+            
+            .table th, .table td {
+                border: none !important;
+                padding: 4px 6px !important;
+                background: #fff !important;
+                color: #000 !important;
+                font-size: 12px !important;
+            }
+            
+            .table th {
+                background: #f8f9fa !important;
+                font-weight: bold !important;
+                border-bottom: 1px solid #000 !important;
+            }
+            
+            .table thead th {
+                background: #f8f9fa !important;
+                border-bottom: 1px solid #000 !important;
+                font-size: 12px !important;
+            }
+            
+            .table tfoot th, .table tfoot td {
+                background: #f8f9fa !important;
+                border-top: 1px solid #000 !important;
+                font-weight: bold !important;
+                font-size: 12px !important;
+            }
+            
+            .table-responsive {
+                overflow: visible !important;
+            }
+            
+            .bg-primary, .bg-success, .bg-info, .bg-warning, .bg-danger,
+            .bg-secondary, .bg-light, .bg-white, .table-dark {
+                background: #fff !important;
+                color: #000 !important;
+                border-color: #000 !important;
+            }
+            
+            .text-white, .text-white-50 { color: #000 !important; }
+            .text-success, .text-danger, .text-warning, .text-info, .text-primary {
+                color: #000 !important;
+            }
+            
+            .badge {
+                border: none !important;
+                background: #fff !important;
+                color: #000 !important;
+                padding: 1px 6px !important;
+                font-size: 11px !important;
+            }
+            
+            .alert {
+                border: none !important;
+                background: #fff !important;
+                color: #000 !important;
+            }
+            
+            .summary-section {
+                background: #fff !important;
+                border: 1px solid #000 !important;
+            }
+            
+            .summary-section .value {
+                color: #000 !important;
+            }
+            
+            .value-cash, .value-credit, .value-cng, .value-liquid, .value-total {
+                color: #000 !important;
+            }
+            
+            @page {
+                size: landscape;
+                margin: 0.5in !important;
+            }
+            
+            ::-webkit-scrollbar { display: none; }
+            
+            .col-md-3, .col-md-4, .col-md-12 {
+                flex: 0 0 100% !important;
+                max-width: 100% !important;
+                width: 100% !important;
+            }
+            
+            .row {
+                margin: 0 !important;
+            }
         }
         .print-header { display: none; }
         .badge-open { background: #28a745; color: white; }
@@ -79,6 +295,7 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
         .value-cng { color: #17a2b8; }
         .value-liquid { color: #007bff; }
         .value-total { color: #dc3545; }
+        .value-item { color: #6f42c1; }
     </style>
 </head>
 <body>
@@ -167,7 +384,7 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                 <div class="col-md-12">
                     <div class="card">
                         <div class="card-header bg-dark text-white">
-                            <h5><i class="fas fa-chart-pie"></i> Sales Breakdown Summary</h5>
+                            <h5><i class="fas fa-chart-pie"></i> Sales Breakdown Summary (All 3 POS Types)</h5>
                         </div>
                         <div class="card-body">
                             <div class="row">
@@ -201,11 +418,21 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                                 </div>
                             </div>
                             <div class="row mt-2">
-                                <div class="col-md-12">
+                                <div class="col-md-6">
                                     <div class="summary-section" style="border: 2px solid #dc3545;">
-                                        <h6><i class="fas fa-chart-line"></i> GRAND TOTAL</h6>
+                                        <h6><i class="fas fa-chart-line"></i> GRAND TOTAL (All Sales)</h6>
                                         <div class="value value-total" style="font-size: 28px;"><?php echo $currency; ?> <?php echo number_format($total_all_sales, 2); ?></div>
-                                        <small>Total Cash + Credit + CNG + Liquid Sales</small>
+                                        <small>Total Cash + Credit Sales from all 3 POS types</small>
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="summary-section" style="border: 2px solid #6f42c1;">
+                                        <h6><i class="fas fa-box"></i> Sales by Type</h6>
+                                        <div class="row">
+                                            <div class="col-6">Liquid Fuel: <strong><?php echo $currency; ?> <?php echo number_format($total_liquid_sales, 2); ?></strong></div>
+                                            <div class="col-6">CNG: <strong><?php echo $currency; ?> <?php echo number_format($total_cng_sales, 2); ?></strong></div>
+                                            <div class="col-6">Item Sales: <strong class="value-item"><?php echo $currency; ?> <?php echo number_format($total_item_sales, 2); ?></strong></div>
+                                        </div>
                                     </div>
                                 </div>
                             </div>
@@ -315,7 +542,7 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                     <!-- Product-wise breakdown per shift -->
                     <div class="row mt-3">
                         <div class="col-md-12">
-                            <h6><i class="fas fa-th-list"></i> Sales Composition</h6>
+                            <h6><i class="fas fa-th-list"></i> Sales Composition (All 3 POS Types)</h6>
                             <table class="table table-sm table-bordered">
                                 <thead>
                                     <tr>
@@ -344,6 +571,11 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                                         <td>Liquid Sales</td>
                                         <td class="text-end"><?php echo $currency; ?> <?php echo number_format($total_liquid_sales, 2); ?></td>
                                         <td class="text-end"><?php echo $total_all_sales > 0 ? number_format(($total_liquid_sales / $total_all_sales) * 100, 1) : 0; ?>%</td>
+                                    </tr>
+                                    <tr>
+                                        <td>Item Sales</td>
+                                        <td class="text-end"><?php echo $currency; ?> <?php echo number_format($total_item_sales, 2); ?></td>
+                                        <td class="text-end"><?php echo $total_all_sales > 0 ? number_format(($total_item_sales / $total_all_sales) * 100, 1) : 0; ?>%</td>
                                     </tr>
                                     <tr class="table-primary fw-bold">
                                         <td>GRAND TOTAL</td>

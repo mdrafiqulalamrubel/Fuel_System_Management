@@ -80,22 +80,17 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['start_shift'])) {
     $shift_date = date('Y-m-d');
     $opening_cash = isset($_POST['opening_cash']) && $_POST['opening_cash'] !== '' ? floatval($_POST['opening_cash']) : 0;
     
-    // =============================================
-    // PLC OPENING READING - User can edit, auto-filled as default
-    // =============================================
     $opening_plc = isset($_POST['opening_plc']) && $_POST['opening_plc'] !== '' ? floatval($_POST['opening_plc']) : $last_plc_reading;
     $notes = isset($_POST['notes']) ? $_POST['notes'] : '';
     
     try {
         $pdo->beginTransaction();
         
-        // Check if shift already open
         $stmt = $pdo->query("SELECT id FROM shift_closing WHERE status = 'open'");
         if($stmt->rowCount() > 0) {
             throw new Exception("A shift is already open! Please close it first.");
         }
         
-        // Insert shift closing record with opening cash and PLC
         $stmt = $pdo->prepare("
             INSERT INTO shift_closing (
                 shift_id, shift_date, opening_time, opened_by, 
@@ -105,17 +100,14 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['start_shift'])) {
         $stmt->execute([$shift_id, $shift_date, $user['id'], $opening_cash, $opening_plc, $notes]);
         $shift_closing_id = $pdo->lastInsertId();
         
-        // Update system settings with current PLC reading
         $stmt = $pdo->prepare("UPDATE system_settings SET setting_value = ? WHERE setting_key = 'last_plc_reading'");
         $stmt->execute([$opening_plc]);
         
-        // Record opening stock for each tank
         foreach($tanks as $tank) {
             $stmt = $pdo->prepare("INSERT INTO shift_stock (shift_id, tank_id, opening_stock, closing_stock, recorded_by) VALUES (?, ?, ?, ?, ?)");
             $stmt->execute([$shift_closing_id, $tank['id'], $tank['current_stock_liters'], 0, $user['id']]);
         }
         
-        // Record opening meter readings for EACH nozzle
         foreach($nozzles as $nozzle) {
             $opening_meter = isset($_POST['opening_meter_' . $nozzle['id']]) && $_POST['opening_meter_' . $nozzle['id']] !== '' ? floatval($_POST['opening_meter_' . $nozzle['id']]) : $nozzle['closing_meter'];
             
@@ -144,7 +136,6 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['start_shift'])) {
             $success .= " (from previous shift closing)";
         }
         
-        // Refresh active shift
         $stmt = $pdo->query("
             SELECT sc.*, sh.shift_name 
             FROM shift_closing sc 
@@ -154,8 +145,6 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['start_shift'])) {
             LIMIT 1
         ");
         $active_shift = $stmt->fetch();
-        
-        // Update last PLC reading
         $last_plc_reading = $opening_plc;
         
     } catch(Exception $e) {
@@ -169,16 +158,12 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['close_shift'])) {
     $shift_id = $_POST['shift_id'];
     $closing_cash = isset($_POST['closing_cash']) && $_POST['closing_cash'] !== '' ? floatval($_POST['closing_cash']) : 0;
     
-    // =============================================
-    // PLC CLOSING READING - User enters the current PLC reading
-    // =============================================
     $closing_plc = isset($_POST['closing_plc']) && $_POST['closing_plc'] !== '' ? floatval($_POST['closing_plc']) : $last_plc_reading;
     $notes = isset($_POST['notes']) ? $_POST['notes'] : '';
     
     try {
         $pdo->beginTransaction();
         
-        // Get shift details
         $stmt = $pdo->prepare("SELECT * FROM shift_closing WHERE id = ? AND status = 'open'");
         $stmt->execute([$shift_id]);
         $shift = $stmt->fetch();
@@ -187,15 +172,12 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['close_shift'])) {
             throw new Exception("Shift not found or already closed!");
         }
         
-        // Calculate PLC difference
         $opening_plc = $shift['opening_plc_count'] ?? 0;
         $plc_difference = $closing_plc - $opening_plc;
         
-        // Update closing meter readings for EACH nozzle
         foreach($nozzles as $nozzle) {
             $closing_meter = isset($_POST['closing_meter_' . $nozzle['id']]) && $_POST['closing_meter_' . $nozzle['id']] !== '' ? floatval($_POST['closing_meter_' . $nozzle['id']]) : 0;
             
-            // Update meter readings with closing values
             $stmt = $pdo->prepare("
                 UPDATE meter_readings 
                 SET 
@@ -206,18 +188,17 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['close_shift'])) {
             ");
             $stmt->execute([$closing_meter, $shift_id, $nozzle['id']]);
             
-            // Update nozzle's closing meter for next shift
             $stmt = $pdo->prepare("UPDATE nozzles SET closing_meter = ? WHERE id = ?");
             $stmt->execute([$closing_meter, $nozzle['id']]);
         }
         
-        // Calculate all sales types separately
         // 1. Liquid Fuel Sales
         $stmt = $pdo->prepare("
             SELECT 
                 p.product_name,
                 COALESCE(SUM(CASE WHEN s.sale_type = 'cash' THEN s.total_amount ELSE 0 END), 0) as cash_sales,
                 COALESCE(SUM(CASE WHEN s.sale_type = 'credit' THEN s.total_amount ELSE 0 END), 0) as credit_sales,
+                COALESCE(SUM(CASE WHEN s.advance_used > 0 THEN s.advance_used ELSE 0 END), 0) as advance_sales,
                 COALESCE(SUM(s.total_amount), 0) as total_sales,
                 COUNT(*) as transaction_count
             FROM sales s
@@ -234,6 +215,7 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['close_shift'])) {
                 'CNG' as product_name,
                 COALESCE(SUM(CASE WHEN gs.sale_type = 'cash' THEN gs.total_amount ELSE 0 END), 0) as cash_sales,
                 COALESCE(SUM(CASE WHEN gs.sale_type = 'credit' THEN gs.total_amount ELSE 0 END), 0) as credit_sales,
+                COALESCE(SUM(CASE WHEN gs.advance_used > 0 THEN gs.advance_used ELSE 0 END), 0) as advance_sales,
                 COALESCE(SUM(gs.total_amount), 0) as total_sales,
                 COUNT(*) as transaction_count
             FROM gas_sales gs
@@ -242,39 +224,96 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['close_shift'])) {
         $stmt->execute([$shift['shift_id'], $shift['shift_date']]);
         $cng_sales = $stmt->fetch();
         
+        // 3. Item Sales
+        $stmt = $pdo->prepare("
+            SELECT 
+                'Item Sales' as product_name,
+                COALESCE(SUM(CASE WHEN isa.sale_type = 'cash' THEN isa.total_amount ELSE 0 END), 0) as cash_sales,
+                COALESCE(SUM(CASE WHEN isa.sale_type = 'credit' THEN isa.total_amount ELSE 0 END), 0) as credit_sales,
+                COALESCE(SUM(CASE WHEN isa.advance_used > 0 THEN isa.advance_used ELSE 0 END), 0) as advance_sales,
+                COALESCE(SUM(isa.total_amount), 0) as total_sales,
+                COUNT(*) as transaction_count
+            FROM item_sales isa
+            WHERE isa.shift_id = ? AND DATE(isa.sale_date) = ?
+        ");
+        $stmt->execute([$shift['shift_id'], $shift['shift_date']]);
+        $item_sales = $stmt->fetch();
+        
         // Total Summary
         $total_cash_sales = 0;
         $total_credit_sales = 0;
+        $total_advance_sales = 0;
         $total_liquid_sales = 0;
         $total_cng_sales = 0;
-        $total_all_sales = 0;
+        $total_item_sales = 0;
+        $total_payments = 0;
         
         foreach($liquid_sales_by_product as $liquid) {
             $total_cash_sales += $liquid['cash_sales'];
             $total_credit_sales += $liquid['credit_sales'];
+            $total_advance_sales += $liquid['advance_sales'];
             $total_liquid_sales += $liquid['total_sales'];
         }
-        
+
         if($cng_sales) {
             $total_cash_sales += $cng_sales['cash_sales'];
             $total_credit_sales += $cng_sales['credit_sales'];
+            $total_advance_sales += $cng_sales['advance_sales'];
             $total_cng_sales = $cng_sales['total_sales'];
         }
+
+        if($item_sales) {
+            $total_cash_sales += $item_sales['cash_sales'];
+            $total_credit_sales += $item_sales['credit_sales'];
+            $total_advance_sales += $item_sales['advance_sales'];
+            $total_item_sales = $item_sales['total_sales'];
+        }
+
+        // TOTAL ALL SALES = Cash Sales + Credit Sales (including all 3 POS types)
+        $total_all_sales = $total_cash_sales + $total_credit_sales + $total_advance_sales;
         
-        $total_all_sales = $total_liquid_sales + $total_cng_sales;
+        // Total Payments (for credit sales payments received)
+        $stmt = $pdo->prepare("
+            SELECT COALESCE(SUM(amount), 0) as total_payments
+            FROM credit_payments cp
+            JOIN credit_sales cs ON cp.credit_sale_id = cs.id
+            JOIN sales s ON cs.sale_id = s.id
+            WHERE s.shift_id = ? AND DATE(cp.payment_date) = ?
+        ");
+        $stmt->execute([$shift['shift_id'], $shift['shift_date']]);
+        $credit_payments = $stmt->fetch()['total_payments'] ?? 0;
         
-        // Update shift closing with all sales data and PLC
+        // Item credit payments
+        $stmt = $pdo->prepare("
+            SELECT COALESCE(SUM(amount), 0) as total_payments
+            FROM item_credit_payments cp
+            JOIN item_credit_sales cs ON cp.item_credit_sale_id = cs.id
+            JOIN item_sales isa ON cs.sale_id = isa.id
+            WHERE isa.shift_id = ? AND DATE(cp.payment_date) = ?
+        ");
+        $stmt->execute([$shift['shift_id'], $shift['shift_date']]);
+        $item_credit_payments = $stmt->fetch()['total_payments'] ?? 0;
+        
+        $total_payments = $credit_payments + $item_credit_payments;
+        
+        // Net cash = total receipts (cash sales + payments received)
+        $total_receipts = $total_cash_sales + $total_payments;
+        $net_cash = $closing_cash;
+        
+        // Update shift closing with ALL columns
         $stmt = $pdo->prepare("
             UPDATE shift_closing 
             SET closing_time = NOW(),
                 closed_by = ?,
                 total_cash_sales = ?,
                 total_credit_sales = ?,
+                total_advance_sales = ?,
                 total_gas_sales = ?,
                 total_liquid_sales = ?,
                 total_cng_sales = ?,
                 total_all_sales = ?,
                 total_receipts = ?,
+                total_payments = ?,
                 net_cash = ?,
                 closing_plc_count = ?,
                 plc_difference = ?,
@@ -287,26 +326,24 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['close_shift'])) {
             $user['id'],
             $total_cash_sales,
             $total_credit_sales,
+            $total_advance_sales,
             $cng_sales ? $cng_sales['total_sales'] : 0,
             $total_liquid_sales,
             $total_cng_sales,
             $total_all_sales,
-            $closing_cash,
-            $closing_cash,
+            $total_receipts,
+            $total_payments,
+            $net_cash,
             $closing_plc,
             $plc_difference,
             $notes,
             $shift_id
         ]);
         
-        // =============================================
-        // UPDATE LAST PLC READING FOR NEXT SHIFT
-        // =============================================
         $stmt = $pdo->prepare("UPDATE system_settings SET setting_value = ? WHERE setting_key = 'last_plc_reading'");
         $stmt->execute([$closing_plc]);
         $last_plc_reading = $closing_plc;
         
-        // Update closing stock for each tank
         foreach($tanks as $tank) {
             $stmt = $pdo->prepare("
                 UPDATE shift_stock 
@@ -318,17 +355,17 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['close_shift'])) {
         
         $pdo->commit();
         
-        // Build success message
         $success = "✅ Shift closed successfully!<br><br>";
         $success .= "<strong>📊 SALES BREAKDOWN:</strong><br>";
         $success .= "<div class='table-responsive'><table class='table table-sm table-bordered'>";
-        $success .= "<thead><tr><th>Product</th><th class='text-end'>Cash</th><th class='text-end'>Credit</th><th class='text-end'>Total</th></tr></thead><tbody>";
+        $success .= "<thead><tr><th>Product</th><th class='text-end'>Cash</th><th class='text-end'>Credit</th><th class='text-end'>Advance</th><th class='text-end'>Total</th></tr></thead><tbody>";
         
         foreach($liquid_sales_by_product as $liquid) {
             $success .= "<tr>";
             $success .= "<td>{$liquid['product_name']}</td>";
             $success .= "<td class='text-end'>" . number_format($liquid['cash_sales'], 2) . "</td>";
             $success .= "<td class='text-end'>" . number_format($liquid['credit_sales'], 2) . "</td>";
+            $success .= "<td class='text-end'>" . number_format($liquid['advance_sales'], 2) . "</td>";
             $success .= "<td class='text-end fw-bold'>" . number_format($liquid['total_sales'], 2) . "</td>";
             $success .= "</tr>";
         }
@@ -338,7 +375,18 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['close_shift'])) {
             $success .= "<td>CNG</td>";
             $success .= "<td class='text-end'>" . number_format($cng_sales['cash_sales'], 2) . "</td>";
             $success .= "<td class='text-end'>" . number_format($cng_sales['credit_sales'], 2) . "</td>";
+            $success .= "<td class='text-end'>" . number_format($cng_sales['advance_sales'], 2) . "</td>";
             $success .= "<td class='text-end fw-bold'>" . number_format($cng_sales['total_sales'], 2) . "</td>";
+            $success .= "</tr>";
+        }
+        
+        if($item_sales && $item_sales['total_sales'] > 0) {
+            $success .= "<tr>";
+            $success .= "<td>Item Sales</td>";
+            $success .= "<td class='text-end'>" . number_format($item_sales['cash_sales'], 2) . "</td>";
+            $success .= "<td class='text-end'>" . number_format($item_sales['credit_sales'], 2) . "</td>";
+            $success .= "<td class='text-end'>" . number_format($item_sales['advance_sales'], 2) . "</td>";
+            $success .= "<td class='text-end fw-bold'>" . number_format($item_sales['total_sales'], 2) . "</td>";
             $success .= "</tr>";
         }
         
@@ -346,11 +394,13 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['close_shift'])) {
         $success .= "<td>TOTAL</td>";
         $success .= "<td class='text-end'>" . number_format($total_cash_sales, 2) . "</td>";
         $success .= "<td class='text-end'>" . number_format($total_credit_sales, 2) . "</td>";
+        $success .= "<td class='text-end'>" . number_format($total_advance_sales, 2) . "</td>";
         $success .= "<td class='text-end'>" . number_format($total_all_sales, 2) . "</td>";
         $success .= "</tr>";
         $success .= "</tbody></table></div>";
         
         $success .= "<strong>💰 Cash in Drawer:</strong> " . number_format($closing_cash, 2) . "<br>";
+        $success .= "<strong>💳 Total Payments Received:</strong> " . number_format($total_payments, 2) . "<br>";
         $success .= "<strong>📟 PLC Meter Reading:</strong> Opening: " . number_format($opening_plc, 2) . " → Closing: " . number_format($closing_plc, 2) . " (Difference: " . number_format($plc_difference, 2) . ")";
         $success .= "<br><small>💡 This closing PLC value will be auto-filled for the next shift opening.</small>";
         
@@ -402,6 +452,8 @@ if($view_shift_id) {
 $settings = $pdo->query("SELECT setting_key, setting_value FROM system_settings")->fetchAll(PDO::FETCH_KEY_PAIR);
 $currency = $settings['currency_symbol'] ?? 'BDT';
 ?>
+
+<!-- REST OF THE HTML REMAINS THE SAME -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -511,6 +563,56 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
         .plc-auto-fill {
             color: #6c757d;
             font-size: 12px;
+        }
+        
+        /* ============================================= */
+        /* PRINT STYLES */
+        /* ============================================= */
+        @media print {
+            .sidebar, .no-print, .btn, .dataTables_length, .dataTables_filter, 
+            .dataTables_paginate, .dataTables_info, .stats-card {
+                display: none !important;
+            }
+            
+            @page {
+                size: landscape;
+                margin: 0.5in !important;
+            }
+            
+            body { margin: 0.5in !important; padding: 0 !important; }
+            
+            .main-content { margin: 0 !important; padding: 0 !important; width: 100% !important; }
+            .container-fluid { padding: 0 !important; max-width: 100% !important; }
+            
+            .card { border: none !important; margin-bottom: 8px !important; border-radius: 0 !important; box-shadow: none !important; }
+            .card-header { border: none !important; padding: 5px 8px !important; background: #fff !important; color: #000 !important; border-bottom: 2px solid #000 !important; }
+            .card-header h5 { font-size: 14px !important; color: #000 !important; }
+            .card-body { padding: 5px 0 !important; }
+            
+            .table { border-collapse: collapse !important; width: 100% !important; font-size: 10px !important; border: 2px solid #000 !important; }
+            .table th, .table td { border: none !important; padding: 3px 5px !important; background: #fff !important; color: #000 !important; font-size: 10px !important; }
+            .table th { background: #f8f9fa !important; font-weight: bold !important; border-bottom: 1px solid #000 !important; }
+            .table thead th { background: #f8f9fa !important; border-bottom: 1px solid #000 !important; }
+            .table tfoot th, .table tfoot td { background: #f8f9fa !important; border-top: 1px solid #000 !important; font-weight: bold !important; }
+            
+            .bg-primary, .bg-success, .bg-info, .bg-warning, .bg-danger,
+            .bg-secondary, .bg-light, .bg-white, .table-dark {
+                background: #fff !important; color: #000 !important; border-color: #000 !important;
+            }
+            .text-white, .text-white-50 { color: #000 !important; }
+            .text-success, .text-danger, .text-warning, .text-info, .text-primary { color: #000 !important; }
+            
+            .badge { border: none !important; background: #fff !important; color: #000 !important; padding: 1px 5px !important; }
+            .alert { border: none !important; background: #fff !important; color: #000 !important; }
+            
+            .shift-active, .shift-closed { border: 1px solid #000 !important; background: #fff !important; }
+            .plc-field, .cash-field { border: 1px solid #000 !important; background: #fff !important; }
+            
+            .col-md-3, .col-md-4, .col-md-6, .col-md-12, .col-md-2 { padding: 0 3px !important; width: 100% !important; max-width: 100% !important; flex: 0 0 100% !important; }
+            .row { margin: 0 !important; }
+            
+            .table-responsive { overflow: visible !important; }
+            ::-webkit-scrollbar { display: none; }
         }
     </style>
 </head>
@@ -714,9 +816,7 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
         </div>
     </div>
     
-    <!-- ============================================= -->
-    <!-- START SHIFT MODAL WITH NOZZLE READINGS & PLC -->
-    <!-- ============================================= -->
+    <!-- START SHIFT MODAL -->
     <div class="modal fade" id="startShiftModal" tabindex="-1">
         <div class="modal-dialog modal-lg">
             <div class="modal-content">
@@ -748,9 +848,6 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                             </div>
                         </div>
                         
-                        <!-- ============================================= -->
-                        <!-- CASH DRAWER FIELD - OPTIONAL -->
-                        <!-- ============================================= -->
                         <div class="cash-field mb-3">
                             <div class="row">
                                 <div class="col-md-6">
@@ -767,9 +864,6 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                             </div>
                         </div>
                         
-                        <!-- ============================================= -->
-                        <!-- PLC FIELD - Auto-filled, EDITABLE -->
-                        <!-- ============================================= -->
                         <div class="plc-field mb-3">
                             <div class="row">
                                 <div class="col-md-6">
@@ -795,16 +889,12 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                             </div>
                         </div>
                         
-                        <!-- ============================================= -->
-                        <!-- NOZZLE METER READINGS - OPENING -->
-                        <!-- ============================================= -->
                         <div class="alert alert-info">
                             <i class="fas fa-info-circle"></i>
                             <strong>Opening Meter Readings</strong>
                             <br><small>Values are pre-filled with current meter readings. You can modify if needed.</small>
                         </div>
                         
-                        <!-- Pipeline Nozzles -->
                         <?php if(!empty($pipeline_nozzles)): ?>
                         <div class="section-title">
                             <i class="fas fa-pipe text-warning"></i> Pipeline Nozzles (CNG)
@@ -833,7 +923,6 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                         <?php endforeach; ?>
                         <?php endif; ?>
                         
-                        <!-- Tank Nozzles -->
                         <?php if(!empty($tank_nozzles)): ?>
                         <div class="section-title">
                             <i class="fas fa-oil-can text-info"></i> Tank Nozzles (Liquid Fuel)
@@ -885,9 +974,7 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
         </div>
     </div>
     
-    <!-- ============================================= -->
-    <!-- CLOSE SHIFT MODAL WITH NOZZLE READINGS & PLC -->
-    <!-- ============================================= -->
+    <!-- CLOSE SHIFT MODAL -->
     <div class="modal fade" id="closeShiftModal" tabindex="-1">
         <div class="modal-dialog modal-lg">
             <div class="modal-content">
@@ -907,23 +994,18 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                             4. Verify all sales are recorded
                         </div>
                         
-                        <!-- ============================================= -->
-                        <!-- NOZZLE METER READINGS - CLOSING -->
-                        <!-- ============================================= -->
                         <div class="alert alert-info">
                             <i class="fas fa-info-circle"></i>
                             <strong>Enter Closing Meter Readings for all nozzles</strong>
                             <br><small>The system will calculate the difference automatically</small>
                         </div>
                         
-                        <!-- Pipeline Nozzles -->
                         <?php if(!empty($pipeline_nozzles)): ?>
                         <div class="section-title">
                             <i class="fas fa-pipe text-warning"></i> Pipeline Nozzles (CNG)
                             <span class="badge badge-pipeline ms-2">Pipeline</span>
                         </div>
                         <?php foreach($pipeline_nozzles as $nozzle): 
-                            // Get opening reading for this nozzle
                             $stmt = $pdo->prepare("
                                 SELECT opening_meter
                                 FROM meter_readings 
@@ -962,7 +1044,6 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                         <?php endforeach; ?>
                         <?php endif; ?>
                         
-                        <!-- Tank Nozzles -->
                         <?php if(!empty($tank_nozzles)): ?>
                         <div class="section-title">
                             <i class="fas fa-oil-can text-info"></i> Tank Nozzles (Liquid Fuel)
@@ -1009,9 +1090,6 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                         
                         <hr>
                         
-                        <!-- ============================================= -->
-                        <!-- CASH AND PLC FIELDS -->
-                        <!-- ============================================= -->
                         <div class="row">
                             <div class="col-md-6">
                                 <div class="mb-3 cash-field">
@@ -1053,9 +1131,7 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
         </div>
     </div>
     
-    <!-- ============================================= -->
-    <!-- VIEW SHIFT METER READINGS MODAL -->
-    <!-- ============================================= -->
+    <!-- VIEW SHIFT MODALS -->
     <?php foreach($shift_history as $shift): ?>
     <div class="modal fade" id="viewShiftModal<?php echo $shift['id']; ?>" tabindex="-1">
         <div class="modal-dialog modal-lg">
@@ -1096,7 +1172,6 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                     </div>
                     
                     <?php
-                    // Get meter readings for this shift
                     $stmt = $pdo->prepare("
                         SELECT 
                             mr.*,
@@ -1174,9 +1249,6 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                 }
             });
             
-            // =============================================
-            // Calculate and display difference for closing meters
-            // =============================================
             $('.closing-meter').on('input', function() {
                 var opening = parseFloat($(this).data('opening')) || 0;
                 var closing = parseFloat($(this).val()) || 0;
@@ -1193,9 +1265,6 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                 }
             });
             
-            // =============================================
-            // Form validation for start shift
-            // =============================================
             $('#startShiftForm').on('submit', function(e) {
                 var valid = true;
                 var message = '';
@@ -1205,7 +1274,6 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                     message += 'Please select a shift.\n';
                 }
                 
-                // Check if opening PLC is entered
                 var openingPlc = parseFloat($('input[name="opening_plc"]').val()) || 0;
                 if(openingPlc < 0) {
                     valid = false;
@@ -1234,9 +1302,6 @@ $currency = $settings['currency_symbol'] ?? 'BDT';
                 return true;
             });
             
-            // =============================================
-            // Form validation for close shift
-            // =============================================
             $('#closeShiftForm').on('submit', function(e) {
                 var valid = true;
                 var message = '';
